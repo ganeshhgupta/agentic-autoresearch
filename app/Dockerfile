@@ -22,7 +22,7 @@ RUN npm run build
 FROM python:3.13-slim AS prod
 
 RUN apt-get update \
- && apt-get install -y --no-install-recommends nodejs npm curl ca-certificates git libgmp10 \
+ && apt-get install -y --no-install-recommends nodejs npm curl ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
 RUN npm install -g @anthropic-ai/claude-code
@@ -35,18 +35,8 @@ ENV PATH="/root/.local/bin:${PATH}"
 RUN curl --proto '=https' -fsSL https://drop-sh.fullyjustified.net | sh \
  && mv tectonic /usr/local/bin/tectonic
 
-# Lean 4 + Mathlib for scripts/lean.py — see app/backend/Dockerfile for why
-# this lives outside /shared (nothing here is bind-mounted in prod, but we
-# keep the same layout so the two Dockerfiles stay interchangeable).
-ENV ELAN_HOME="/root/.elan"
-ENV PATH="${ELAN_HOME}/bin:${PATH}"
-ENV LEAN_PROJECT_DIR="/opt/lean/research"
-RUN curl https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -sSf \
-      | sh -s -- -y --default-toolchain none \
- && LEAN_VERSION=$(curl -fsSL https://raw.githubusercontent.com/leanprover-community/mathlib4/master/lean-toolchain | sed 's#leanprover/lean4:##') \
- && mkdir -p /opt/lean && cd /opt/lean \
- && lake "+${LEAN_VERSION}" new research math \
- && cd research && lake exe cache get
+# Lean 4 + Mathlib runs as its own service (lean-service/, on its own host
+# with real RAM) — scripts/lean.py calls it over HTTP, see LEAN_SERVICE_URL.
 
 # --- /shared: cwd claude runs from, holds prompt + docs + scripts ---
 WORKDIR /shared

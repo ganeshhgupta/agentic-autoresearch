@@ -30,6 +30,9 @@ services:
       # Polite-pool identifier for OpenAlex/Crossref/arXiv (any email works,
       # improves rate limits — no account/signup needed).
       - RESEARCH_CONTACT_EMAIL=${RESEARCH_CONTACT_EMAIL:-}
+      # --- Lean 4 + Mathlib service (see lean-service/, runs elsewhere) ---
+      - LEAN_SERVICE_URL=${LEAN_SERVICE_URL:-}
+      - LEAN_SERVICE_TOKEN=${LEAN_SERVICE_TOKEN:-}
       # --- Langfuse (optional tracing; no-op unless both keys set) ---
       - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY:-}
       - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY:-}

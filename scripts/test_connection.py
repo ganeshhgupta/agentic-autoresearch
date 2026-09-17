@@ -78,15 +78,11 @@ def check_tectonic() -> None:
 
 
 def check_lean() -> None:
-    project_dir = os.environ.get("LEAN_PROJECT_DIR", "/opt/lean/research")
-    subprocess.run(
-        ["lake", "env", "lean", "--version"],
-        cwd=project_dir,
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=True,
-    )
+    url = os.environ.get("LEAN_SERVICE_URL", "").rstrip("/")
+    if not url:
+        raise RuntimeError("LEAN_SERVICE_URL not set")
+    r = httpx.get(f"{url}/health", timeout=10)
+    r.raise_for_status()
 
 
 def main() -> None:

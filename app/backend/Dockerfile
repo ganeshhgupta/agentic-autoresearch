@@ -1,9 +1,8 @@
 FROM python:3.13-slim
 
-# Node is needed for the `claude` CLI; curl for the uv/elan installers; git for
-# lake to fetch Mathlib; libgmp10 is a runtime dep of the Lean toolchain.
+# Node is needed for the `claude` CLI; curl for the uv installer.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends nodejs npm curl ca-certificates git libgmp10 \
+ && apt-get install -y --no-install-recommends nodejs npm curl ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
 RUN npm install -g @anthropic-ai/claude-code
@@ -18,21 +17,9 @@ ENV PATH="/root/.local/bin:${PATH}"
 RUN curl --proto '=https' -fsSL https://drop-sh.fullyjustified.net | sh \
  && mv tectonic /usr/local/bin/tectonic
 
-# Lean 4 + Mathlib: elan (toolchain manager) + a prebuilt `lake` project used
-# by scripts/lean.py to formally check hypotheses against Mathlib. This is
-# heavy — several GB and a long first build downloading Mathlib's precompiled
-# cache — because Mathlib was requested in full rather than a bare Lean setup.
-# Lives at /opt/lean, NOT /workspace, since docker-compose bind-mounts the
-# host repo over /workspace at runtime and would shadow anything built there.
-ENV ELAN_HOME="/root/.elan"
-ENV PATH="${ELAN_HOME}/bin:${PATH}"
-ENV LEAN_PROJECT_DIR="/opt/lean/research"
-RUN curl https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -sSf \
-      | sh -s -- -y --default-toolchain none \
- && LEAN_VERSION=$(curl -fsSL https://raw.githubusercontent.com/leanprover-community/mathlib4/master/lean-toolchain | sed 's#leanprover/lean4:##') \
- && mkdir -p /opt/lean && cd /opt/lean \
- && lake "+${LEAN_VERSION}" new research math \
- && cd research && lake exe cache get
+# Lean 4 + Mathlib runs as its own service (see lean-service/) — it needs
+# more RAM than this container has any business carrying just to typecheck
+# a claim occasionally. scripts/lean.py calls it over HTTP; see LEAN_SERVICE_URL.
 
 WORKDIR /app
 

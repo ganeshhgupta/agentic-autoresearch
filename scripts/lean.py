@@ -3,9 +3,10 @@ full Mathlib library. Use this to check whether a hypothesis, once stated
 precisely as a formal claim, actually holds (falsification stage of the
 pipeline) rather than relying on prose reasoning alone.
 
-The prebuilt Lean project (with Mathlib) lives outside the workspace at
-LEAN_PROJECT_DIR (baked into the image at /opt/lean/research); this script
-just points `lake env lean` at a file you wrote anywhere under the workspace.
+Mathlib runs as its own service (see lean-service/) because loading its
+environment needs real RAM this app's container doesn't have. Set
+LEAN_SERVICE_URL (and LEAN_SERVICE_TOKEN if the service requires auth) to
+point at it.
 
 Usage:
     uv run scripts/lean.py new <path/to/file.lean>    # scaffold a file with `import Mathlib`
@@ -14,12 +15,14 @@ Usage:
 
 import argparse
 import os
-import subprocess
 import sys
 from pathlib import Path
 
+import httpx
+
 ROOT = Path(os.environ.get("SHARED_ROOT", "/shared"))
-LEAN_PROJECT_DIR = os.environ.get("LEAN_PROJECT_DIR", "/opt/lean/research")
+SERVICE_URL = os.environ.get("LEAN_SERVICE_URL", "").rstrip("/")
+SERVICE_TOKEN = os.environ.get("LEAN_SERVICE_TOKEN")
 
 STARTER = """import Mathlib
 
@@ -47,38 +50,36 @@ def new(path: str) -> None:
 
 
 def check(path: str) -> None:
+    if not SERVICE_URL:
+        print("error: LEAN_SERVICE_URL is not set", file=sys.stderr)
+        sys.exit(1)
+
     target = _resolve(path)
     if not target.is_file():
         print(f"error: {target} does not exist", file=sys.stderr)
         sys.exit(1)
 
+    headers = {"Authorization": f"Bearer {SERVICE_TOKEN}"} if SERVICE_TOKEN else {}
     try:
-        proc = subprocess.run(
-            ["lake", "env", "lean", str(target)],
-            cwd=LEAN_PROJECT_DIR,
-            capture_output=True,
-            text=True,
-            timeout=300,
+        resp = httpx.post(
+            f"{SERVICE_URL}/check",
+            json={"code": target.read_text(encoding="utf-8")},
+            headers=headers,
+            timeout=310.0,
         )
-    except subprocess.TimeoutExpired:
-        print("error: lean timed out after 300s", file=sys.stderr)
-        sys.exit(1)
-    except FileNotFoundError:
-        print(
-            f"error: `lake` not found or {LEAN_PROJECT_DIR} missing — "
-            "the Lean/Mathlib toolchain may not be installed in this image",
-            file=sys.stderr,
-        )
+        resp.raise_for_status()
+    except httpx.HTTPError as e:
+        print(f"error: request to lean-service failed: {e}", file=sys.stderr)
         sys.exit(1)
 
-    output = (proc.stdout or "") + (proc.stderr or "")
-    if proc.returncode == 0:
+    data = resp.json()
+    if data["ok"]:
         print("OK: typechecks with no errors")
-        if output.strip():
-            print(output)
+        if data["output"].strip():
+            print(data["output"])
     else:
         print("FAILED: does not typecheck")
-        print(output)
+        print(data["output"])
         sys.exit(1)
 
 
