@@ -45,7 +45,12 @@ def check_crossref() -> None:
 
 
 def check_arxiv() -> None:
-    r = httpx.get("http://export.arxiv.org/api/query", params={"search_query": "all:test", "max_results": 1}, timeout=10)
+    r = httpx.get(
+        "https://export.arxiv.org/api/query",
+        params={"search_query": "all:test", "max_results": 1},
+        timeout=10,
+        follow_redirects=True,
+    )
     r.raise_for_status()
 
 

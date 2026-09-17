@@ -9,7 +9,7 @@ import httpx
 
 def get_json(url: str, params: dict | None = None, headers: dict | None = None, timeout: float = 20.0):
     try:
-        resp = httpx.get(url, params=params, headers=headers, timeout=timeout)
+        resp = httpx.get(url, params=params, headers=headers, timeout=timeout, follow_redirects=True)
         resp.raise_for_status()
         return resp.json()
     except httpx.HTTPError as e:

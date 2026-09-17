@@ -11,13 +11,13 @@ import xml.etree.ElementTree as ET
 
 import httpx
 
-BASE = "http://export.arxiv.org/api/query"
+BASE = "https://export.arxiv.org/api/query"
 NS = {"atom": "http://www.w3.org/2005/Atom"}
 
 
 def _fetch(params: dict) -> ET.Element:
     try:
-        resp = httpx.get(BASE, params=params, timeout=20.0)
+        resp = httpx.get(BASE, params=params, timeout=20.0, follow_redirects=True)
         resp.raise_for_status()
     except httpx.HTTPError as e:
         print(f"error: request to arXiv failed: {e}", file=sys.stderr)

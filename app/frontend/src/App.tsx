@@ -275,7 +275,9 @@ export default function App() {
             </div>
           )}
           <AnimatePresence initial={false}>
-            {state.items.map((item) => (
+            {state.items
+              .filter((item) => item.kind !== 'tool_call' || item.awaiting)
+              .map((item) => (
               <motion.div
                 key={item.id}
                 initial={{ opacity: 0, y: 6 }}

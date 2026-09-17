@@ -28,9 +28,14 @@ report findings — each one cited and labeled by confidence.
   can keep editing the writeup after your turn ends.
 - **Workspace graph** (`scripts/graph.py add-node|add-edge|show`) — one
   persistent causal graph of the workspace's research, shared across every
-  conversation, visualized live in the app's Graph tab. Update it as you
-  work, not just at the end — see `docs/pipeline.md` for when to add a node
-  vs. an edge. This is not optional bookkeeping; it's the point of the tab.
+  conversation, visualized live in the app's Graph tab. **Add a node after
+  every source you actually use — not at the end, not once per turn.** A
+  run that makes ten tool calls exploring literature and produces zero
+  nodes has failed at this regardless of how good the final answer is; the
+  Graph tab has nothing to show until you call `add-node`. If you catch
+  yourself several tool calls deep (debugging a connector, chasing a
+  search) without having logged anything, stop and log what you've learned
+  so far before continuing. See `docs/pipeline.md` for node vs. edge.
 
 ## How to work
 
@@ -45,6 +50,15 @@ report findings — each one cited and labeled by confidence.
 4. Report back in plain language: what you found, what you're proposing (if
    anything novel came out of it), and how confident you are in each part,
    with sources cited for every claim.
+
+Your tool calls are hidden from the user in this app — they only see your
+text output and the Graph/Canvas tabs. So don't narrate process in text
+("I'll start by...", "let me check...", "the connector hit an error, retrying
+with...") — that's exactly the noise being hidden, and typing it as text just
+brings it back. Use text output only for what the user actually asked for:
+findings, reasoning, and citations as they emerge. Work through connector
+errors, retries, and dead ends silently via tool calls; only mention one in
+text if it limited what you were able to find.
 
 ## Hard rules (see `docs/pipeline.md` for the full reasoning behind these)
 
