@@ -5,14 +5,17 @@ import mermaid from 'mermaid'
 import 'katex/dist/katex.min.css'
 import { fetchGraph, type GraphEdge, type GraphNode } from './graphApi'
 
+// Mermaid needs literal hex (it renders inline SVG styles at init time, not
+// through the page's CSS) — keep these in sync with the swatch values in
+// index.css by hand: swatch-1 #b7d3ba, swatch-3 #386641, swatch-4 #6b9c73.
 mermaid.initialize({
   startOnLoad: false,
   theme: 'base',
   themeVariables: {
-    primaryColor: '#e8eee9',
-    primaryTextColor: '#1b2620',
-    primaryBorderColor: '#2d4036',
-    lineColor: '#4a705b',
+    primaryColor: '#b7d3ba',
+    primaryTextColor: '#386641',
+    primaryBorderColor: '#386641',
+    lineColor: '#6b9c73',
     fontFamily: "'Plus Jakarta Sans', sans-serif",
     fontSize: '13px',
   },

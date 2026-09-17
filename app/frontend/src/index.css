@@ -1,43 +1,50 @@
 @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
 
 :root {
-  /* Palette source: Primary #2D4036, Secondary #4A705B, Tertiary #6F8578,
-     Neutral #FBFDFB. Light workspace theme — Neutral anchors the
-     backgrounds, Primary (dark green) carries the interactive accent role
-     since it has plenty of contrast against a near-white background. */
+  /* Palette source: the 5-swatch strip the user supplied — palest sage,
+     light mint, dark forest green, medium sage, light grey. Every color
+     below is one of these five or a color-mix() blend of them (plus white,
+     for the base canvas only) — no independently-chosen hues. */
+  --swatch-1: #b7d3ba; /* palest sage */
+  --swatch-2: #a0dba7; /* light mint */
+  --swatch-3: #386641; /* dark forest green */
+  --swatch-4: #6b9c73; /* medium sage */
+  --swatch-5: #d3d3d3; /* light grey */
 
   /* Backgrounds */
-  --bg-primary: #fbfdfb;
-  --bg-secondary: #f2f6f3;
-  --bg-tertiary: #e8eee9;
-  --bg-hover: rgba(45, 64, 54, 0.06);
+  --bg-primary: #ffffff;
+  --bg-secondary: var(--swatch-5);
+  --bg-tertiary: var(--swatch-1);
+  --bg-hover: color-mix(in srgb, var(--swatch-3) 8%, transparent);
 
   /* Text */
-  --text-primary: #1b2620;
-  --text-secondary: #46554c;
-  --text-muted: #7c8b84;
-  --text-placeholder: #9aa79f;
-  --text-on-accent: #fbfdfb;
+  --text-primary: var(--swatch-3);
+  --text-secondary: color-mix(in srgb, var(--swatch-3) 55%, var(--swatch-4) 45%);
+  --text-muted: color-mix(in srgb, var(--swatch-4) 70%, var(--swatch-5) 30%);
+  --text-placeholder: color-mix(in srgb, var(--swatch-5) 70%, white 30%);
+  --text-on-accent: #ffffff;
 
   /* Borders */
-  --border-default: #d9e1db;
-  --border-hover: #c2cec5;
+  --border-default: color-mix(in srgb, var(--swatch-5) 70%, white 30%);
+  --border-hover: var(--swatch-5);
   --border-focus: var(--accent);
 
   /* Accent */
-  --accent: #2d4036;
-  --accent-hover: #24332b;
-  --accent-muted: rgba(45, 64, 54, 0.14);
-  --accent-subtle: rgba(45, 64, 54, 0.06);
-  --accent-glow: 0 0 15px rgba(45, 64, 54, 0.18);
+  --accent: var(--swatch-3);
+  --accent-hover: color-mix(in srgb, var(--swatch-3) 85%, black 15%);
+  --accent-muted: color-mix(in srgb, var(--swatch-3) 16%, transparent);
+  --accent-subtle: color-mix(in srgb, var(--swatch-3) 7%, transparent);
+  --accent-glow: 0 0 15px color-mix(in srgb, var(--swatch-3) 20%, transparent);
 
-  /* Semantic */
-  --success: #2f9e58;
-  --danger: #dc2626;
-  --danger-bg: rgba(220, 38, 38, 0.08);
-  --danger-border: rgba(220, 38, 38, 0.3);
-  --danger-text: #b91c1c;
-  --info: #2563eb;
+  /* Semantic — no red/blue in the given palette, so success/danger/info are
+     distinguished by lightness and background weight, not hue. Danger in
+     particular loses the usual red convention; say so if that's a problem. */
+  --success: var(--swatch-2);
+  --danger: var(--swatch-3);
+  --danger-bg: color-mix(in srgb, var(--swatch-3) 8%, transparent);
+  --danger-border: color-mix(in srgb, var(--swatch-3) 30%, transparent);
+  --danger-text: var(--swatch-3);
+  --info: var(--swatch-4);
 
   /* Fonts */
   --font-sans: 'Plus Jakarta Sans', ui-sans-serif, system-ui, sans-serif;
