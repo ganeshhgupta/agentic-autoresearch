@@ -21,9 +21,15 @@ services:
       # mounted project root. Scripts read their own config via os.getenv, so add
       # any tool config (DB creds, API keys) to the `environment:` list below.
       - SHARED_ROOT=/workspace
-      # --- Add your agent's tool config here (forwarded to scripts) ---
-      # - DB_HOST=${DB_HOST:-}
-      # - DB_PASSWORD=${DB_PASSWORD:-}
+      # --- Research connector config (forwarded to scripts) ---
+      # CORE requires a free key: https://core.ac.uk/services/api
+      - CORE_API_KEY=${CORE_API_KEY:-}
+      # Semantic Scholar works without a key; a key raises rate limits:
+      # https://www.semanticscholar.org/product/api
+      - SEMANTIC_SCHOLAR_API_KEY=${SEMANTIC_SCHOLAR_API_KEY:-}
+      # Polite-pool identifier for OpenAlex/Crossref/arXiv (any email works,
+      # improves rate limits — no account/signup needed).
+      - RESEARCH_CONTACT_EMAIL=${RESEARCH_CONTACT_EMAIL:-}
       # --- Langfuse (optional tracing; no-op unless both keys set) ---
       - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY:-}
       - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY:-}
