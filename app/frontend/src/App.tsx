@@ -11,6 +11,8 @@ import LatexEditor from './LatexEditor'
 import LoadingDots from './LoadingDots'
 import Login from './Login'
 import { Markdown } from './Markdown'
+import PipelineCanvas from './PipelineCanvas'
+import TelemetryPanel from './TelemetryPanel'
 import { renderToolBody } from './tools/registry'
 import './App.css'
 
@@ -36,7 +38,7 @@ export default function App() {
   const [sessionId, setSessionId] = useState<string | null>(() => readUrl().session)
   const [state, setState] = useState(initialChatState)
   const [draft, setDraft] = useState('')
-  const [view, setView] = useState<'chat' | 'latex'>('chat')
+  const [view, setView] = useState<'chat' | 'canvas' | 'latex'>('chat')
   const [auth, setAuth] = useState<AuthStatus | null>(null)
   const [now, setNow] = useState(() => Date.now())
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -224,6 +226,12 @@ export default function App() {
               Chat
             </button>
             <button
+              className={`topbar__tab ${view === 'canvas' ? 'topbar__tab--active' : ''}`}
+              onClick={() => setView('canvas')}
+            >
+              Canvas
+            </button>
+            <button
               className={`topbar__tab ${view === 'latex' ? 'topbar__tab--active' : ''}`}
               onClick={() => setView('latex')}
             >
@@ -238,6 +246,13 @@ export default function App() {
         </header>
 
         {view === 'latex' && <LatexEditor />}
+
+        {view === 'canvas' && (
+          <div className="canvas-view">
+            <PipelineCanvas items={state.items} running={state.running} />
+            <TelemetryPanel items={state.items} tokens={state.tokens} elapsed={elapsed} running={state.running} />
+          </div>
+        )}
 
         {view === 'chat' && (
         <>

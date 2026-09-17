@@ -1,37 +1,42 @@
-@import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
 
 :root {
+  /* Palette source: Primary #2D4036, Secondary #4A705B, Tertiary #6F8578,
+     Neutral #FBFDFB. Dark workspace theme — Primary is too dark to read as
+     an accent on a near-black bg, so it anchors backgrounds/borders instead
+     and Secondary carries the interactive accent role. */
+
   /* Backgrounds */
-  --bg-primary: #0a0a0a;
-  --bg-secondary: #141414;
-  --bg-tertiary: #1e1e1e;
-  --bg-hover: rgba(245, 158, 11, 0.08);
+  --bg-primary: #0b120f;
+  --bg-secondary: #131c17;
+  --bg-tertiary: #1b2620;
+  --bg-hover: rgba(74, 112, 91, 0.1);
 
   /* Text */
-  --text-primary: #e5e5e5;
-  --text-secondary: #a0a0a0;
-  --text-muted: #666666;
-  --text-placeholder: #555555;
-  --text-on-accent: #0a0a0a;
+  --text-primary: #fbfdfb;
+  --text-secondary: #b3c0b9;
+  --text-muted: #75857d;
+  --text-placeholder: #55635b;
+  --text-on-accent: #fbfdfb;
 
   /* Borders */
-  --border-default: #2a2a2a;
-  --border-hover: #3a3a3a;
-  --border-focus: #f59e0b;
+  --border-default: #263a30;
+  --border-hover: #35503f;
+  --border-focus: var(--accent);
 
   /* Accent */
-  --accent: #f59e0b;
-  --accent-hover: #d97706;
-  --accent-muted: rgba(245, 158, 11, 0.12);
-  --accent-subtle: rgba(245, 158, 11, 0.06);
-  --accent-glow: 0 0 15px rgba(245, 158, 11, 0.12);
+  --accent: #4a705b;
+  --accent-hover: #5c8570;
+  --accent-muted: rgba(74, 112, 91, 0.18);
+  --accent-subtle: rgba(74, 112, 91, 0.08);
+  --accent-glow: 0 0 15px rgba(74, 112, 91, 0.25);
 
   /* Semantic */
-  --success: #22c55e;
+  --success: #4ade80;
   --danger: #ef4444;
 
   /* Fonts */
-  --font-sans: 'Montserrat', ui-sans-serif, system-ui, sans-serif;
+  --font-sans: 'Plus Jakarta Sans', ui-sans-serif, system-ui, sans-serif;
   --font-mono: 'JetBrains Mono', ui-monospace, monospace;
 }
 

@@ -45,7 +45,16 @@ class LoginSession:
 
 
 async def get_status(user_id: str = "default") -> dict:
-    """Run `claude auth status --json` and return the parsed object."""
+    """Report logged-in immediately when a shared credential is configured
+    (CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_API_KEY) — claude_runner.py's chat
+    subprocess already authenticates with it directly, so the per-user
+    `claude auth login` dance below is unnecessary friction for a
+    single-shared-token deployment. It's kept as a fallback for a genuine
+    multi-tenant deployment with no shared token, where each user logs into
+    their own claude.ai account instead."""
+    if os.environ.get("CLAUDE_CODE_OAUTH_TOKEN") or os.environ.get("ANTHROPIC_API_KEY"):
+        return {"loggedIn": True}
+
     proc = await asyncio.create_subprocess_exec(
         "claude", "auth", "status", "--json",
         env=_claude_env(user_id),
