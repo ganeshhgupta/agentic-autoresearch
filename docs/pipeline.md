@@ -43,15 +43,45 @@ research question
       v
 8. TRY TO         -- actively look for the strongest reason the
    FALSIFY IT        hypothesis fails or already has a known
-      |              counterexample
+      |              counterexample. If the hypothesis is a precise
+      |              mathematical/logical claim (not just an empirical
+      |              one), state it formally in Lean and typecheck it
+      |              with `uv run scripts/lean.py` — see below
       v
 9. FILTER BY      -- would anyone act on this insight if it's true?
    USEFULNESS        If not, it's an observation, not a finding
       |
       v
 10. SYNTHESIZE   -- report findings with citations, labeled by
-                     confidence
+                     confidence. For anything substantial, also write it
+                     up as `latex/<name>.tex` (see below) so the user has
+                     a document, not just a chat reply
 ```
+
+## Formal verification with Lean (stage 8)
+
+`scripts/lean.py` typechecks a `.lean` file against the full Mathlib
+library — a much stronger check than prose reasoning for anything that
+reduces to a precise mathematical or logical claim:
+
+```
+uv run scripts/lean.py new  <path/to/claim.lean>   # scaffold with `import Mathlib`
+uv run scripts/lean.py check <path/to/claim.lean>  # typecheck against Mathlib
+```
+
+This doesn't replace the novelty check (stage 7) — a hypothesis can be true
+and still already published. Use it to catch hypotheses that are simply
+*wrong*, which is a faster and more certain kill than searching for a
+counterexample in prose.
+
+## Writing up findings (stage 10)
+
+For anything worth keeping, write it as `latex/<name>.tex` in the workspace
+(create the `latex/` folder if it doesn't exist) and compile it directly with
+Bash: `tectonic latex/<name>.tex`. Report both the LaTeX source path and
+whether it compiled cleanly. Files under `latex/` are also visible in the
+app's LaTeX editor panel, so the user can keep refining the writeup after
+your turn ends.
 
 ## The hierarchy to respect
 

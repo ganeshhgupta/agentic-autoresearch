@@ -21,7 +21,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -30,6 +30,7 @@ from agui_sync import drive_turn, resume_point, sse_response
 from auth import complete_login, get_status, start_login
 from claude_runner import run_claude
 from conversations import get_conversation, list_conversations
+import latex
 from langfuse_emit import emit_turn
 from runlog import get_runlog
 
@@ -120,6 +121,11 @@ class AnswerRequest(BaseModel):
 class LoginComplete(BaseModel):
     session_id: str
     code: str
+
+
+class LatexSaveRequest(BaseModel):
+    name: str
+    content: str
 
 
 @router.get("/api/health")
@@ -262,6 +268,39 @@ async def conversation(session_id: str, user: str = Depends(current_user)) -> di
     if items is None:
         raise HTTPException(status_code=404, detail="conversation not found")
     return {"session_id": session_id, "items": items}
+
+
+@router.get("/api/latex/files")
+async def latex_files() -> list[str]:
+    return latex.list_files()
+
+
+@router.get("/api/latex/file/{name}")
+async def latex_read(name: str) -> dict:
+    try:
+        return {"name": name, "content": latex.read_file(name)}
+    except latex.LatexError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+@router.put("/api/latex/file")
+async def latex_write(req: LatexSaveRequest) -> dict:
+    try:
+        latex.write_file(req.name, req.content)
+    except latex.LatexError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {"ok": True}
+
+
+@router.post("/api/latex/compile/{name}")
+async def latex_compile(name: str) -> Response:
+    try:
+        pdf_bytes, log = await asyncio.to_thread(latex.compile_file, name)
+    except latex.LatexError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    if pdf_bytes is None:
+        raise HTTPException(status_code=422, detail=log)
+    return Response(content=pdf_bytes, media_type="application/pdf")
 
 
 app.include_router(router, prefix=APP_PREFIX)

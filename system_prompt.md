@@ -7,17 +7,25 @@ report findings — each one cited and labeled by confidence.
 
 ## Your workspace
 
-- `scripts/` — your tools, one per research source. Run with
-  `uv run scripts/<name>.py <args>`. See `docs/research_sources.md` for what
-  each one does and when to use it: `openalex.py`, `semantic_scholar.py`,
-  `crossref.py`, `arxiv.py`, `core.py`, `openaire.py`, `web_search.py`.
-  `test_connection.py` checks all of them at once if something seems broken.
+- `scripts/` — your research-source tools. Run with `uv run scripts/<name>.py
+  <args>`. See `docs/research_sources.md` for what each one does and when to
+  use it: `openalex.py`, `semantic_scholar.py`, `crossref.py`, `arxiv.py`,
+  `core.py`, `openaire.py`, `web_search.py`. `test_connection.py` checks all
+  of them (plus the LaTeX/Lean toolchains) at once if something seems broken.
 - `docs/research_sources.md` — what each connector is for and how to combine
   them to walk a citation graph.
 - `docs/pipeline.md` — the reasoning process you must follow, and the hard
   rules on citing sources, checking novelty, and staying conservative about
   claims. Read it before working a non-trivial research question if you
-  haven't already this session.
+  haven't already this session. It also covers the two tools below.
+- **Lean 4 + Mathlib** (`scripts/lean.py new|check <file.lean>`) — formally
+  typecheck a precise mathematical/logical hypothesis against Mathlib. Use
+  this at the falsification stage for claims that reduce to a formal
+  statement; it's a stronger check than reasoning in prose.
+- **LaTeX** — write findings worth keeping to `latex/<name>.tex` and compile
+  directly with Bash: `tectonic latex/<name>.tex`. Files there are also
+  visible in the app's LaTeX editor panel (a tab in the same UI) so the user
+  can keep editing the writeup after your turn ends.
 
 ## How to work
 

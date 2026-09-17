@@ -22,7 +22,7 @@ RUN npm run build
 FROM python:3.13-slim AS prod
 
 RUN apt-get update \
- && apt-get install -y --no-install-recommends nodejs npm curl ca-certificates \
+ && apt-get install -y --no-install-recommends nodejs npm curl ca-certificates git libgmp10 \
  && rm -rf /var/lib/apt/lists/*
 
 RUN npm install -g @anthropic-ai/claude-code
@@ -30,16 +30,32 @@ RUN npm install -g @anthropic-ai/claude-code
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 ENV PATH="/root/.local/bin:${PATH}"
 
+# Tectonic: self-contained LaTeX engine for the editor's Compile endpoint and
+# for the agent's own `tectonic latex/<name>.tex` calls.
+RUN curl --proto '=https' -fsSL https://drop-sh.fullyjustified.net | sh \
+ && mv tectonic /usr/local/bin/tectonic
+
+# Lean 4 + Mathlib for scripts/lean.py — see app/backend/Dockerfile for why
+# this lives outside /shared (nothing here is bind-mounted in prod, but we
+# keep the same layout so the two Dockerfiles stay interchangeable).
+ENV ELAN_HOME="/root/.elan"
+ENV PATH="${ELAN_HOME}/bin:${PATH}"
+ENV LEAN_PROJECT_DIR="/opt/lean/research"
+RUN curl https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -sSf \
+      | sh -s -- -y --default-toolchain none \
+ && LEAN_VERSION=$(curl -fsSL https://raw.githubusercontent.com/leanprover-community/mathlib4/master/lean-toolchain | sed 's#leanprover/lean4:##') \
+ && mkdir -p /opt/lean && cd /opt/lean \
+ && lake "+${LEAN_VERSION}" new research math \
+ && cd research && lake exe cache get
+
 # --- /shared: cwd claude runs from, holds prompt + docs + scripts ---
 WORKDIR /shared
 COPY system_prompt.md ./
-# Only the warehouse schema — the agent should not see internal dev docs, the
-# 0.5MB dataset dumps, or images. Keeps its working context focused and lean.
-COPY docs/warehouse_schema_ce.md ./docs/warehouse_schema_ce.md
+COPY docs/ ./docs/
 COPY scripts/ ./scripts/
 COPY pyproject.toml uv.lock .python-version ./
-# Pre-install the warehouse-query deps (psycopg2-binary, python-dotenv) into
-# /shared/.venv so `uv run scripts/run_query.py` starts instantly.
+# Pre-install the connector deps (httpx, ddgs, python-dotenv) into
+# /shared/.venv so `uv run scripts/<name>.py` starts instantly.
 RUN uv sync --frozen
 
 # --- /app: the FastAPI backend ---

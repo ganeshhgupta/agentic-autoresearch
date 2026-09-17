@@ -7,6 +7,7 @@ import type { AGUIEvent } from './agui_sync'
 import { applyEvent, initialChatState, type TimelineItem } from './chat'
 import { fetchConversations } from './conversationsApi'
 import Honeycomb from './Honeycomb'
+import LatexEditor from './LatexEditor'
 import LoadingDots from './LoadingDots'
 import Login from './Login'
 import { Markdown } from './Markdown'
@@ -35,6 +36,7 @@ export default function App() {
   const [sessionId, setSessionId] = useState<string | null>(() => readUrl().session)
   const [state, setState] = useState(initialChatState)
   const [draft, setDraft] = useState('')
+  const [view, setView] = useState<'chat' | 'latex'>('chat')
   const [auth, setAuth] = useState<AuthStatus | null>(null)
   const [now, setNow] = useState(() => Date.now())
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -214,6 +216,20 @@ export default function App() {
       <div className="main">
         <header className="topbar">
           <div className="topbar__title">Agentic Autoresearch</div>
+          <div className="topbar__tabs">
+            <button
+              className={`topbar__tab ${view === 'chat' ? 'topbar__tab--active' : ''}`}
+              onClick={() => setView('chat')}
+            >
+              Chat
+            </button>
+            <button
+              className={`topbar__tab ${view === 'latex' ? 'topbar__tab--active' : ''}`}
+              onClick={() => setView('latex')}
+            >
+              LaTeX
+            </button>
+          </div>
           <div className="topbar__icons">
             <button className="icon-btn" title="Settings">⚙</button>
             <button className="icon-btn" title="Theme">☀</button>
@@ -221,6 +237,10 @@ export default function App() {
           </div>
         </header>
 
+        {view === 'latex' && <LatexEditor />}
+
+        {view === 'chat' && (
+        <>
         <div className="chat" ref={scrollRef}>
           {state.items.length === 0 && !state.running && (
             <div className="empty">
@@ -304,6 +324,8 @@ export default function App() {
             </button>
           </div>
         </form>
+        </>
+        )}
 
         <footer className="statusbar">
           <span className="statusbar__dot" />

@@ -1,11 +1,12 @@
 """One-shot check that every research connector is reachable and, where
-required, correctly authenticated.
+required, correctly authenticated — plus the local LaTeX/Lean toolchains.
 
 Usage:
     uv run scripts/test_connection.py
 """
 
 import os
+import subprocess
 import sys
 
 import httpx
@@ -72,6 +73,22 @@ def check_web_search() -> None:
     list(DDGS().text("test", max_results=1))
 
 
+def check_tectonic() -> None:
+    subprocess.run(["tectonic", "--version"], capture_output=True, text=True, timeout=15, check=True)
+
+
+def check_lean() -> None:
+    project_dir = os.environ.get("LEAN_PROJECT_DIR", "/opt/lean/research")
+    subprocess.run(
+        ["lake", "env", "lean", "--version"],
+        cwd=project_dir,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=True,
+    )
+
+
 def main() -> None:
     checks = [
         ("OpenAlex", check_openalex),
@@ -81,6 +98,8 @@ def main() -> None:
         ("CORE", check_core),
         ("OpenAIRE", check_openaire),
         ("Web search", check_web_search),
+        ("Tectonic (LaTeX)", check_tectonic),
+        ("Lean + Mathlib", check_lean),
     ]
     results = [check(name, fn) for name, fn in checks]
     if not all(results):
