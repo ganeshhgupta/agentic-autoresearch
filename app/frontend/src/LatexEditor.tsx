@@ -131,7 +131,7 @@ export default function LatexEditor() {
             <CodeMirror
               value={content}
               height="100%"
-              theme="dark"
+              theme="light"
               extensions={[stexLang]}
               onChange={(value) => {
                 setContent(value)

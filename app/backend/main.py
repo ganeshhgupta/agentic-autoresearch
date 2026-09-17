@@ -30,6 +30,7 @@ from agui_sync import drive_turn, resume_point, sse_response
 from auth import complete_login, get_status, start_login
 from claude_runner import run_claude
 from conversations import get_conversation, list_conversations
+import graph
 import latex
 from langfuse_emit import emit_turn
 from runlog import get_runlog
@@ -301,6 +302,11 @@ async def latex_compile(name: str) -> Response:
     if pdf_bytes is None:
         raise HTTPException(status_code=422, detail=log)
     return Response(content=pdf_bytes, media_type="application/pdf")
+
+
+@router.get("/api/graph")
+async def get_graph() -> dict:
+    return graph.read_graph()
 
 
 app.include_router(router, prefix=APP_PREFIX)

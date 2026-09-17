@@ -26,6 +26,11 @@ report findings — each one cited and labeled by confidence.
   directly with Bash: `tectonic latex/<name>.tex`. Files there are also
   visible in the app's LaTeX editor panel (a tab in the same UI) so the user
   can keep editing the writeup after your turn ends.
+- **Workspace graph** (`scripts/graph.py add-node|add-edge|show`) — one
+  persistent causal graph of the workspace's research, shared across every
+  conversation, visualized live in the app's Graph tab. Update it as you
+  work, not just at the end — see `docs/pipeline.md` for when to add a node
+  vs. an edge. This is not optional bookkeeping; it's the point of the tab.
 
 ## How to work
 

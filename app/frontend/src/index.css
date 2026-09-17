@@ -2,38 +2,42 @@
 
 :root {
   /* Palette source: Primary #2D4036, Secondary #4A705B, Tertiary #6F8578,
-     Neutral #FBFDFB. Dark workspace theme — Primary is too dark to read as
-     an accent on a near-black bg, so it anchors backgrounds/borders instead
-     and Secondary carries the interactive accent role. */
+     Neutral #FBFDFB. Light workspace theme — Neutral anchors the
+     backgrounds, Primary (dark green) carries the interactive accent role
+     since it has plenty of contrast against a near-white background. */
 
   /* Backgrounds */
-  --bg-primary: #0b120f;
-  --bg-secondary: #131c17;
-  --bg-tertiary: #1b2620;
-  --bg-hover: rgba(74, 112, 91, 0.1);
+  --bg-primary: #fbfdfb;
+  --bg-secondary: #f2f6f3;
+  --bg-tertiary: #e8eee9;
+  --bg-hover: rgba(45, 64, 54, 0.06);
 
   /* Text */
-  --text-primary: #fbfdfb;
-  --text-secondary: #b3c0b9;
-  --text-muted: #75857d;
-  --text-placeholder: #55635b;
+  --text-primary: #1b2620;
+  --text-secondary: #46554c;
+  --text-muted: #7c8b84;
+  --text-placeholder: #9aa79f;
   --text-on-accent: #fbfdfb;
 
   /* Borders */
-  --border-default: #263a30;
-  --border-hover: #35503f;
+  --border-default: #d9e1db;
+  --border-hover: #c2cec5;
   --border-focus: var(--accent);
 
   /* Accent */
-  --accent: #4a705b;
-  --accent-hover: #5c8570;
-  --accent-muted: rgba(74, 112, 91, 0.18);
-  --accent-subtle: rgba(74, 112, 91, 0.08);
-  --accent-glow: 0 0 15px rgba(74, 112, 91, 0.25);
+  --accent: #2d4036;
+  --accent-hover: #24332b;
+  --accent-muted: rgba(45, 64, 54, 0.14);
+  --accent-subtle: rgba(45, 64, 54, 0.06);
+  --accent-glow: 0 0 15px rgba(45, 64, 54, 0.18);
 
   /* Semantic */
-  --success: #4ade80;
-  --danger: #ef4444;
+  --success: #2f9e58;
+  --danger: #dc2626;
+  --danger-bg: rgba(220, 38, 38, 0.08);
+  --danger-border: rgba(220, 38, 38, 0.3);
+  --danger-text: #b91c1c;
+  --info: #2563eb;
 
   /* Fonts */
   --font-sans: 'Plus Jakarta Sans', ui-sans-serif, system-ui, sans-serif;

@@ -6,6 +6,7 @@ import { subscribeAGUI } from './agui_sync'
 import type { AGUIEvent } from './agui_sync'
 import { applyEvent, initialChatState, type TimelineItem } from './chat'
 import { fetchConversations } from './conversationsApi'
+import GraphView from './GraphView'
 import Honeycomb from './Honeycomb'
 import LatexEditor from './LatexEditor'
 import LoadingDots from './LoadingDots'
@@ -38,7 +39,7 @@ export default function App() {
   const [sessionId, setSessionId] = useState<string | null>(() => readUrl().session)
   const [state, setState] = useState(initialChatState)
   const [draft, setDraft] = useState('')
-  const [view, setView] = useState<'chat' | 'canvas' | 'latex'>('chat')
+  const [view, setView] = useState<'chat' | 'canvas' | 'graph' | 'latex'>('chat')
   const [auth, setAuth] = useState<AuthStatus | null>(null)
   const [now, setNow] = useState(() => Date.now())
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -232,6 +233,12 @@ export default function App() {
               Canvas
             </button>
             <button
+              className={`topbar__tab ${view === 'graph' ? 'topbar__tab--active' : ''}`}
+              onClick={() => setView('graph')}
+            >
+              Graph
+            </button>
+            <button
               className={`topbar__tab ${view === 'latex' ? 'topbar__tab--active' : ''}`}
               onClick={() => setView('latex')}
             >
@@ -253,6 +260,8 @@ export default function App() {
             <TelemetryPanel items={state.items} tokens={state.tokens} elapsed={elapsed} running={state.running} />
           </div>
         )}
+
+        {view === 'graph' && <GraphView />}
 
         {view === 'chat' && (
         <>
@@ -297,9 +306,9 @@ export default function App() {
                 margin: '8px 2px',
                 padding: '10px 12px',
                 borderRadius: 8,
-                border: '1px solid rgba(220, 80, 80, 0.4)',
-                background: 'rgba(220, 80, 80, 0.08)',
-                color: '#f3b1b1',
+                border: '1px solid var(--danger-border)',
+                background: 'var(--danger-bg)',
+                color: 'var(--danger-text)',
                 fontSize: 13,
               }}
             >
