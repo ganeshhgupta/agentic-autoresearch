@@ -39,9 +39,14 @@ function escapeLabel(s: string): string {
 function buildDiagram(nodes: GraphNode[], edges: GraphEdge[]): string {
   const lines = ['flowchart TD']
   for (const n of nodes) {
-    // ProofSteps get a diamond so they read as "derivation step", not a claim.
+    // Inference nodes get a diamond so they read as "derivation step", not a claim.
     const label = escapeLabel(n.text)
-    lines.push(n.kind === 'proofstep' ? `  ${n.id}{"${label}"}` : `  ${n.id}["${label}"]`)
+    lines.push(n.kind === 'inference' ? `  ${n.id}{"${label}"}` : `  ${n.id}["${label}"]`)
+    // Local (paper-scoped, not yet promoted) claims get a dashed border so
+    // they read as provisional next to solid-bordered global claims.
+    if (n.kind === 'claim' && n.scope === 'local') {
+      lines.push(`  style ${n.id} stroke-dasharray: 4 3`)
+    }
   }
   for (const e of edges) {
     const label = e.label ? `|"${escapeLabel(e.label)}"|` : ''
@@ -121,6 +126,7 @@ export default function GraphView() {
               <span className="graph-view__node-id">
                 {n.id}
                 {n.claim_type && ` · ${n.claim_type}`}
+                {n.scope === 'local' && ' · local'}
               </span>
               <span className="graph-view__node-text">{n.text}</span>
             </button>
@@ -129,11 +135,13 @@ export default function GraphView() {
 
         {selectedNode && (
           <div className="graph-view__detail">
-            {(selectedNode.claim_type || selectedNode.status) && (
+            {(selectedNode.claim_type || selectedNode.status || selectedNode.scope) && (
               <div className="graph-view__detail-meta">
                 {selectedNode.claim_type}
                 {selectedNode.claim_type && selectedNode.status && ' · '}
                 {selectedNode.status}
+                {(selectedNode.claim_type || selectedNode.status) && selectedNode.scope && ' · '}
+                {selectedNode.scope}
               </div>
             )}
             <div className="graph-view__detail-text">{selectedNode.text}</div>

@@ -1,7 +1,9 @@
 """Workspace knowledge graph: read-only access to the persistent Claim/
-ProofStep graph the agent builds via scripts/kg.py. One graph for the whole
-workspace — it spans every conversation and every ingested paper, never
-scoped to a single thread. Backed by Neo4j; see scripts/kg.py for the schema.
+Inference graph the agent builds via scripts/kg.py (and the immutable
+Source graph from scripts/doc_ir.py, not rendered here — see that module).
+One graph for the whole workspace — it spans every conversation and every
+ingested paper, never scoped to a single thread. Backed by Neo4j; see
+scripts/kg.py for the schema.
 """
 from __future__ import annotations
 
@@ -32,8 +34,9 @@ def _driver():
 SCHEMA_STATEMENTS = [
     "CREATE CONSTRAINT claim_id IF NOT EXISTS FOR (c:Claim) REQUIRE c.id IS UNIQUE",
     "CREATE CONSTRAINT paper_id IF NOT EXISTS FOR (p:Paper) REQUIRE p.id IS UNIQUE",
-    "CREATE CONSTRAINT proofstep_id IF NOT EXISTS FOR (ps:ProofStep) REQUIRE ps.id IS UNIQUE",
+    "CREATE CONSTRAINT inference_id IF NOT EXISTS FOR (i:Inference) REQUIRE i.id IS UNIQUE",
     "CREATE CONSTRAINT representation_id IF NOT EXISTS FOR (r:Representation) REQUIRE r.id IS UNIQUE",
+    "CREATE CONSTRAINT source_id IF NOT EXISTS FOR (s:Source) REQUIRE s.id IS UNIQUE",
     """CREATE VECTOR INDEX representation_embedding IF NOT EXISTS
        FOR (r:Representation) ON (r.embedding)
        OPTIONS {indexConfig: {`vector.dimensions`: 1024, `vector.similarity_function`: 'cosine'}}""",
@@ -71,8 +74,8 @@ def read_graph() -> dict:
                     MATCH (c:Claim)
                     OPTIONAL MATCH (r:Representation)-[:OF]->(c)
                     WITH c, r ORDER BY r.created_at
-                    WITH c, collect(r) AS reps
-                    RETURN c.id AS id, c.claim_type AS claim_type, c.status AS status, reps
+                    WITH c, collect(r) AS reps, labels(c) AS labels
+                    RETURN c.id AS id, c.claim_type AS claim_type, c.status AS status, labels, reps
                     LIMIT $limit
                     """,
                     limit=NODE_LIMIT,
@@ -90,6 +93,7 @@ def read_graph() -> dict:
                             "kind": "claim",
                             "claim_type": row["claim_type"],
                             "status": row["status"],
+                            "scope": "global" if "Global" in row["labels"] else "local",
                             "text": (nl or {}).get("content", "(no NL representation yet)"),
                             "math": (formal or {}).get("content"),
                             "code": (code or {}).get("content"),
@@ -97,17 +101,17 @@ def read_graph() -> dict:
                         }
                     )
 
-                ps_rows = session.run(
-                    "MATCH (ps:ProofStep) RETURN ps.id AS id, ps.proof_route AS route LIMIT $limit",
+                inf_rows = session.run(
+                    "MATCH (i:Inference) RETURN i.id AS id, i.method AS method LIMIT $limit",
                     limit=NODE_LIMIT,
                 ).data()
-                for row in ps_rows:
-                    nodes.append({"id": row["id"], "kind": "proofstep", "text": row["route"]})
+                for row in inf_rows:
+                    nodes.append({"id": row["id"], "kind": "inference", "text": row["method"]})
 
                 edge_rows = session.run(
                     """
                     MATCH (a)-[e]->(b)
-                    WHERE (a:Claim OR a:ProofStep) AND (b:Claim OR b:ProofStep)
+                    WHERE (a:Claim OR a:Inference) AND (b:Claim OR b:Inference)
                     RETURN a.id AS from, b.id AS to, type(e) AS type
                     LIMIT $limit
                     """,

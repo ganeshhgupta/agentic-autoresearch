@@ -1,42 +1,63 @@
 """Knowledge graph — the workspace's persistent research graph, backed by
 Neo4j. Used both for ordinary research-session note-taking (`note`) and for
 decomposing a full paper into atomic claims (see docs/paper_ingestion.md for
-that workflow). One graph, shared across every conversation.
+that workflow, and scripts/doc_ir.py for the lossless source-text layer this
+points back into via provenance). One graph, shared across every conversation.
 
-Schema (see docs/paper_ingestion.md for the full design rationale):
-    (:Claim {id, claim_type, status, domain_tags, created_at})
-    (:Representation {id, modality, content, lang_or_system, source_paper,
-                       span, confidence, created_at})-[:OF]->(:Claim)
-    (:ProofStep {id, proof_route, source_paper, created_at})
+Schema:
+    (:Claim:Local|Global {id, claim_type, status, domain_tags, created_at})
+      -- Local: this paper's draft claim. Global: canonical, shared,
+      -- reusable across papers. `claim promote` moves Local -> Global.
+    (:Representation {id, modality, content, content_hash, lang_or_system,
+                       source_paper, confidence, embedding, created_at})
+      -[:OF]->(:Claim)
+      -[:GROUNDED_IN]->(:Source)   -- provenance: exact doc-IR span, required
+    (:Inference {id, method, reasoning, source_paper, created_at})
+      -[:USES]->(:Claim)          -- one edge per premise (a set, not a chain)
+      -[:PRODUCES]->(:Claim)      -- the conclusion
     (:Paper {id, title, is_survey, ingested_at})
-    (:ProofStep)-[:USES]->(:Claim)          -- a premise
-    (:ProofStep)-[:PRODUCES]->(:Claim)      -- the conclusion
+      -[:ASSERTS|USES|CHALLENGES]->(:Claim:Global)
+      -[:CITES]->(:Paper)
     (:Claim)-[:EQUIVALENT_TO|GENERALIZES|SPECIALIZES|ANALOGOUS_TO
               |CONTRADICTS|SUPPORTS|LED_TO|RELATED_TO {confidence?}]->(:Claim)
-    (:Paper)-[:CITES]->(:Paper)
 
 There is deliberately no update/delete command for Claim or Representation
-content — only create, represent, link, and search. If a paper's claim
-contradicts or refines an existing one, add a new Claim/Representation and a
-CONTRADICTS/GENERALIZES edge; never edit history.
+content — only create, represent, link, promote, and search/canonicalize.
+If a paper's claim contradicts or refines an existing one, add a new Claim/
+Representation and a CONTRADICTS/GENERALIZES edge; never edit history.
+
+Two ways to write:
+  - Individual commands (claim create/represent/link, inference create/
+    uses/produces) — immediate, one write per call. Fine for note-taking
+    and simple cases.
+  - `apply-patch <file.json>` — a typed GraphPatch manifest applied in one
+    all-or-nothing transaction. Prefer this for paper ingestion: build the
+    patch for one theorem/atomic-unit's worth of claims+inference+edges,
+    then commit it atomically instead of many individual imperative calls.
+    See `apply-patch --help` / docs/paper_ingestion.md for the schema.
 
 Usage:
     uv run scripts/kg.py init
     uv run scripts/kg.py note --text "..." [--math "..."] [--code "..." --code-lang py]
     uv run scripts/kg.py paper upsert --id <arxiv-id-or-doi> --title "..." [--survey]
     uv run scripts/kg.py paper status --id <arxiv-id-or-doi>
-    uv run scripts/kg.py search --text "..." [--top-k 5]
-    uv run scripts/kg.py claim create --type theorem --status proven [--domain-tags "MSC:11A07,ACM:F.2.2"]
-    uv run scripts/kg.py claim represent --claim <id> --modality nl --content "..." --paper <paper-id> [--span "..."] [--confidence 0.9]
+    uv run scripts/kg.py paper link --paper <id> --claim <id> --relation ASSERTS|USES|CHALLENGES
+    uv run scripts/kg.py canonicalize --text "..." [--math "..."] [--top-k 5]
+    uv run scripts/kg.py claim create --type theorem --status proven [--domain-tags "MSC:11A07"]
+    uv run scripts/kg.py claim represent --claim <id> --modality nl --content "..." --paper <paper-id> --source-item <doc-ir-id> [--confidence 0.9]
     uv run scripts/kg.py claim link --type EQUIVALENT_TO --from <id> --to <id> [--confidence 0.8]
-    uv run scripts/kg.py proofstep create --route "..." --paper <paper-id>
-    uv run scripts/kg.py proofstep uses --proofstep <id> --claim <id>
-    uv run scripts/kg.py proofstep produces --proofstep <id> --claim <id>
+    uv run scripts/kg.py claim promote --claim <id>
+    uv run scripts/kg.py inference create --method NAME --reasoning "..." --paper <paper-id>
+    uv run scripts/kg.py inference uses --inference <id> --claim <id>
+    uv run scripts/kg.py inference produces --inference <id> --claim <id>
+    uv run scripts/kg.py apply-patch <path/to/patch.json>
     uv run scripts/kg.py show --claim <id>
     uv run scripts/kg.py show --paper <id>
 """
 
 import argparse
+import hashlib
+import json
 import os
 import secrets
 import sys
@@ -46,21 +67,16 @@ import httpx
 from neo4j import GraphDatabase
 
 EDGE_TYPES = [
-    "EQUIVALENT_TO",
-    "GENERALIZES",
-    "SPECIALIZES",
-    "ANALOGOUS_TO",
-    "CONTRADICTS",
-    "SUPPORTS",
-    "LED_TO",
-    "RELATED_TO",
+    "EQUIVALENT_TO", "GENERALIZES", "SPECIALIZES", "ANALOGOUS_TO",
+    "CONTRADICTS", "SUPPORTS", "LED_TO", "RELATED_TO",
 ]
-CLAIM_TYPES = ["definition", "axiom", "theorem", "lemma", "corollary", "conjecture", "algorithm", "empirical-result", "construction", "note"]
+PAPER_RELATIONS = ["ASSERTS", "USES", "CHALLENGES"]
+CLAIM_TYPES = ["definition", "axiom", "theorem", "lemma", "corollary", "conjecture",
+               "algorithm", "empirical-result", "construction", "note"]
 STATUSES = ["proven", "conjectured", "empirically-supported", "falsified", "asserted"]
 MODALITIES = ["nl", "formal", "code"]
 
 VOYAGE_MODEL = "voyage-4-large"
-
 GENERAL_RESEARCH_PAPER_ID = "_general-research"  # synthetic Paper for note-taking outside paper ingestion
 
 
@@ -70,6 +86,11 @@ def _now() -> str:
 
 def _new_id(prefix: str) -> str:
     return f"{prefix}_{secrets.token_hex(4)}"
+
+
+def _content_hash(text: str) -> str:
+    normalized = " ".join(text.lower().split())
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
 def _driver():
@@ -108,12 +129,28 @@ def _embed(text: str, input_type: str) -> list[float]:
     return resp.json()["data"][0]["embedding"]
 
 
+def _sympify(expr: str):
+    """Best-effort parse of a math string into a SymPy expression for
+    symbolic-equivalence checks. Returns None on any failure — most real
+    LaTeX math won't parse and that's fine, this tier just skips it."""
+    import sympy
+    from sympy.parsing.latex import parse_latex
+
+    for parser in (parse_latex, sympy.sympify):
+        try:
+            return parser(expr)
+        except Exception:  # noqa: BLE001 - any parser failure just means "can't use this tier"
+            continue
+    return None
+
+
 def init() -> None:
     statements = [
         "CREATE CONSTRAINT claim_id IF NOT EXISTS FOR (c:Claim) REQUIRE c.id IS UNIQUE",
         "CREATE CONSTRAINT paper_id IF NOT EXISTS FOR (p:Paper) REQUIRE p.id IS UNIQUE",
-        "CREATE CONSTRAINT proofstep_id IF NOT EXISTS FOR (ps:ProofStep) REQUIRE ps.id IS UNIQUE",
+        "CREATE CONSTRAINT inference_id IF NOT EXISTS FOR (i:Inference) REQUIRE i.id IS UNIQUE",
         "CREATE CONSTRAINT representation_id IF NOT EXISTS FOR (r:Representation) REQUIRE r.id IS UNIQUE",
+        "CREATE CONSTRAINT source_id IF NOT EXISTS FOR (s:Source) REQUIRE s.id IS UNIQUE",
         """CREATE VECTOR INDEX representation_embedding IF NOT EXISTS
            FOR (r:Representation) ON (r.embedding)
            OPTIONS {indexConfig: {`vector.dimensions`: 1024, `vector.similarity_function`: 'cosine'}}""",
@@ -154,56 +191,159 @@ def paper_status(paper_id: str) -> None:
     print(f"{paper_id!r}: {row['title']}  survey={row['is_survey']}  representations_logged={row['representation_count']}")
 
 
-def search(text: str, top_k: int) -> None:
+def paper_link(paper_id: str, claim_id: str, relation: str) -> None:
+    rows = _run(
+        f"""MATCH (p:Paper {{id: $paper_id}}), (c:Claim {{id: $claim_id}})
+            CREATE (p)-[:{relation} {{created_at: $now}}]->(c)
+            RETURN p.id AS p""",
+        paper_id=paper_id, claim_id=claim_id, now=_now(),
+    )
+    if not rows:
+        print("error: paper or claim not found", file=sys.stderr)
+        sys.exit(1)
+    print(f"{paper_id} -{relation}-> {claim_id}")
+
+
+def canonicalize(text: str, math: str | None, top_k: int) -> None:
+    """The cascade: structural exact match -> symbolic (math only) ->
+    lexical overlap -> dense embedding. Every tier only SURFACES candidates
+    with a tier label; nothing here merges anything — that decision (EXACT_SAME/
+    EQUIVALENT/GENERALIZES/SPECIALIZES/APPROXIMATES/CONTRADICTS/RELATED/NEW)
+    is yours to make after reading the candidates, then act via
+    `claim represent` (reuse) or `claim create` + `claim link` (new + edge)."""
+    found_any = False
+
+    # Tier 1: structural exact match.
+    h = _content_hash(text)
+    exact = _run(
+        """MATCH (r:Representation {content_hash: $h})-[:OF]->(c:Claim)
+           RETURN DISTINCT c.id AS claim_id, r.content AS content, labels(c) AS labels""",
+        h=h,
+    )
+    if exact:
+        found_any = True
+        print("=== TIER 1: structural exact match ===")
+        for r in exact:
+            scope = "Global" if "Global" in r["labels"] else "Local"
+            print(f"  [{r['claim_id']}] ({scope}) {r['content'][:150]}")
+
+    # Tier 2: symbolic equivalence (math only).
+    if math:
+        query_expr = _sympify(math)
+        if query_expr is not None:
+            candidates = _run(
+                "MATCH (r:Representation {modality: 'formal'})-[:OF]->(c:Claim) RETURN c.id AS claim_id, r.content AS content LIMIT 500"
+            )
+            matches = []
+            for cand in candidates:
+                cand_expr = _sympify(cand["content"])
+                if cand_expr is None:
+                    continue
+                try:
+                    if query_expr.equals(cand_expr):
+                        matches.append(cand)
+                except Exception:  # noqa: BLE001 - equals() can raise on incompatible types
+                    continue
+            if matches:
+                found_any = True
+                print("=== TIER 2: symbolic equivalence (SymPy) ===")
+                for m in matches:
+                    print(f"  [{m['claim_id']}] {m['content'][:150]}")
+
+    # Tier 3: lexical overlap (crude Jaccard over a bounded candidate pool).
+    query_words = set(text.lower().split())
+    if query_words:
+        candidates = _run(
+            "MATCH (r:Representation {modality: 'nl'})-[:OF]->(c:Claim) RETURN c.id AS claim_id, r.content AS content LIMIT 200"
+        )
+        scored = []
+        for cand in candidates:
+            words = set(cand["content"].lower().split())
+            if not words:
+                continue
+            jaccard = len(query_words & words) / len(query_words | words)
+            if jaccard > 0.3:
+                scored.append((jaccard, cand))
+        if scored:
+            found_any = True
+            print("=== TIER 3: lexical overlap ===")
+            for score, cand in sorted(scored, key=lambda x: -x[0])[:top_k]:
+                print(f"  [{cand['claim_id']}] overlap={score:.2f}  {cand['content'][:150]}")
+
+    # Tier 4: dense embedding retrieval.
     vector = _embed(text, input_type="query")
     rows = _run(
         """MATCH (rep:Representation)
            SEARCH rep IN (VECTOR INDEX representation_embedding FOR $vector LIMIT $k) SCORE AS score
            MATCH (rep)-[:OF]->(c:Claim)
-           RETURN c.id AS claim_id, c.claim_type AS claim_type, c.status AS status,
+           RETURN c.id AS claim_id, c.claim_type AS claim_type, c.status AS status, labels(c) AS labels,
                   rep.content AS content, rep.source_paper AS source_paper, score
            ORDER BY score DESC""",
         k=top_k, vector=vector,
     )
-    if not rows:
-        print("no candidates found (graph may be empty, or vector index still building)")
-        return
-    for r in rows:
-        print(f"[{r['claim_id']}] score={r['score']:.3f}  ({r['claim_type']}, {r['status']})")
-        print(f"    {r['content'][:200]}")
-        print(f"    from {r['source_paper']}")
+    if rows:
+        found_any = True
+        print("=== TIER 4: dense embedding ===")
+        for r in rows:
+            scope = "Global" if "Global" in r["labels"] else "Local"
+            print(f"  [{r['claim_id']}] ({scope}) score={r['score']:.3f}  ({r['claim_type']}, {r['status']})")
+            print(f"      {r['content'][:200]}")
+            print(f"      from {r['source_paper']}")
+
+    if not found_any:
+        print("no candidates at any tier — this looks NEW")
 
 
 def claim_create(claim_type: str, status: str, domain_tags: list[str]) -> None:
     claim_id = _new_id("c")
     _run(
-        """CREATE (c:Claim {id: $id, claim_type: $claim_type, status: $status,
-                             domain_tags: $domain_tags, created_at: $now})""",
+        """CREATE (c:Claim:Local {id: $id, claim_type: $claim_type, status: $status,
+                                   domain_tags: $domain_tags, created_at: $now})""",
         id=claim_id, claim_type=claim_type, status=status, domain_tags=domain_tags, now=_now(),
     )
-    print(f"created claim {claim_id}")
+    print(f"created claim {claim_id} (Local — `claim promote` once you're confident in it)")
+
+
+def claim_promote(claim_id: str) -> None:
+    rows = _run(
+        "MATCH (c:Claim:Local {id: $id}) REMOVE c:Local SET c:Global RETURN c.id AS id",
+        id=claim_id,
+    )
+    if not rows:
+        print(f"error: no such Local claim {claim_id} (already Global, or doesn't exist?)", file=sys.stderr)
+        sys.exit(1)
+    print(f"promoted {claim_id} to Global")
 
 
 def claim_represent(claim_id: str, modality: str, content: str, lang_or_system: str | None,
-                     source_paper: str, span: str | None, confidence: float) -> None:
+                     source_paper: str, source_item: str | None, confidence: float) -> None:
     exists = _run("MATCH (c:Claim {id: $id}) RETURN c.id AS id", id=claim_id)
     if not exists:
         print(f"error: no such claim {claim_id}", file=sys.stderr)
         sys.exit(1)
+    if source_item:
+        item = _run("MATCH (s:Source {id: $id}) RETURN s.id AS id", id=source_item)
+        if not item:
+            print(f"error: no such source item {source_item} — run scripts/doc_ir.py first, or omit --source-item for non-paper notes", file=sys.stderr)
+            sys.exit(1)
 
     rep_id = _new_id("r")
     embedding = _embed(content, input_type="document") if modality == "nl" else None
     _run(
         """MATCH (c:Claim {id: $claim_id})
-           CREATE (r:Representation {id: $rep_id, modality: $modality, content: $content,
+           CREATE (r:Representation {id: $rep_id, modality: $modality, content: $content, content_hash: $hash,
                                       lang_or_system: $lang_or_system, source_paper: $source_paper,
-                                      span: $span, confidence: $confidence, created_at: $now,
-                                      embedding: $embedding})-[:OF]->(c)""",
-        claim_id=claim_id, rep_id=rep_id, modality=modality, content=content,
-        lang_or_system=lang_or_system, source_paper=source_paper, span=span,
+                                      confidence: $confidence, created_at: $now, embedding: $embedding})-[:OF]->(c)""",
+        claim_id=claim_id, rep_id=rep_id, modality=modality, content=content, hash=_content_hash(content),
+        lang_or_system=lang_or_system, source_paper=source_paper,
         confidence=confidence, now=_now(), embedding=embedding,
     )
-    print(f"added {modality} representation {rep_id} to claim {claim_id}")
+    if source_item:
+        _run(
+            "MATCH (r:Representation {id: $rep_id}), (s:Source {id: $source_item}) CREATE (r)-[:GROUNDED_IN]->(s)",
+            rep_id=rep_id, source_item=source_item,
+        )
+    print(f"added {modality} representation {rep_id} to claim {claim_id}" + (f", grounded in {source_item}" if source_item else ""))
 
 
 def claim_link(edge_type: str, src: str, dst: str, confidence: float | None) -> None:
@@ -219,39 +359,40 @@ def claim_link(edge_type: str, src: str, dst: str, confidence: float | None) -> 
     print(f"linked {src} -{edge_type}-> {dst}")
 
 
-def proofstep_create(route: str, source_paper: str) -> None:
-    ps_id = _new_id("ps")
+def inference_create(method: str, reasoning: str, source_paper: str) -> None:
+    inf_id = _new_id("inf")
     _run(
-        "CREATE (ps:ProofStep {id: $id, proof_route: $route, source_paper: $source_paper, created_at: $now})",
-        id=ps_id, route=route, source_paper=source_paper, now=_now(),
+        "CREATE (i:Inference {id: $id, method: $method, reasoning: $reasoning, source_paper: $source_paper, created_at: $now})",
+        id=inf_id, method=method, reasoning=reasoning, source_paper=source_paper, now=_now(),
     )
-    print(f"created proof step {ps_id}")
+    print(f"created inference {inf_id}")
 
 
-def proofstep_edge(rel: str, ps_id: str, claim_id: str) -> None:
+def inference_edge(rel: str, inf_id: str, claim_id: str) -> None:
     rows = _run(
-        f"""MATCH (ps:ProofStep {{id: $ps_id}}), (c:Claim {{id: $claim_id}})
-            CREATE (ps)-[:{rel}]->(c)
-            RETURN ps.id AS ps_id""",
-        ps_id=ps_id, claim_id=claim_id,
+        f"""MATCH (i:Inference {{id: $inf_id}}), (c:Claim {{id: $claim_id}})
+            CREATE (i)-[:{rel}]->(c)
+            RETURN i.id AS inf_id""",
+        inf_id=inf_id, claim_id=claim_id,
     )
     if not rows:
-        print("error: proof step or claim not found", file=sys.stderr)
+        print("error: inference or claim not found", file=sys.stderr)
         sys.exit(1)
-    print(f"{ps_id} -{rel}-> {claim_id}")
+    print(f"{inf_id} -{rel}-> {claim_id}")
 
 
 def note(text: str, math: str | None, code: str | None, code_lang: str | None) -> None:
     """Convenience wrapper for ordinary research-session logging (not paper
     ingestion): one claim, one or more representations, attributed to a
-    synthetic general-research 'paper' rather than a real source."""
+    synthetic general-research 'paper' rather than a real source. Promoted
+    to Global immediately — there's no paper-specific draft stage for notes."""
     _run(
         "MERGE (p:Paper {id: $id}) ON CREATE SET p.title = 'General research notes', p.is_survey = false, p.ingested_at = $now",
         id=GENERAL_RESEARCH_PAPER_ID, now=_now(),
     )
     claim_id = _new_id("c")
     _run(
-        "CREATE (c:Claim {id: $id, claim_type: 'note', status: 'asserted', domain_tags: [], created_at: $now})",
+        "CREATE (c:Claim:Global {id: $id, claim_type: 'note', status: 'asserted', domain_tags: [], created_at: $now})",
         id=claim_id, now=_now(),
     )
     claim_represent(claim_id, "nl", text, None, GENERAL_RESEARCH_PAPER_ID, None, 0.8)
@@ -267,7 +408,7 @@ def show(claim_id: str | None, paper_id: str | None) -> None:
         rows = _run(
             """MATCH (c:Claim {id: $id})
                OPTIONAL MATCH (r:Representation)-[:OF]->(c)
-               RETURN c.claim_type AS claim_type, c.status AS status, c.domain_tags AS domain_tags,
+               RETURN c.claim_type AS claim_type, c.status AS status, c.domain_tags AS domain_tags, labels(c) AS labels,
                       collect({modality: r.modality, content: r.content, source_paper: r.source_paper}) AS reps""",
             id=claim_id,
         )
@@ -275,7 +416,8 @@ def show(claim_id: str | None, paper_id: str | None) -> None:
             print(f"no such claim {claim_id}")
             return
         row = rows[0]
-        print(f"[{claim_id}] {row['claim_type']} / {row['status']}  tags={row['domain_tags']}")
+        scope = "Global" if "Global" in row["labels"] else "Local"
+        print(f"[{claim_id}] {row['claim_type']} / {row['status']} / {scope}  tags={row['domain_tags']}")
         for r in row["reps"]:
             if r["modality"]:
                 print(f"  {r['modality']} (from {r['source_paper']}): {r['content'][:200]}")
@@ -288,6 +430,16 @@ def show(claim_id: str | None, paper_id: str | None) -> None:
                 print(f"  -{e['type']}-> {e['other']}")
             else:
                 print(f"  {e['other']} -{e['type']}-> (this claim)")
+        inf_rows = _run(
+            """MATCH (i:Inference)-[e]-(c:Claim {id: $id})
+               RETURN i.id AS inf_id, i.method AS method, type(e) AS rel""",
+            id=claim_id,
+        )
+        for r in inf_rows:
+            if r["rel"] == "PRODUCES":
+                print(f"  <- produced by {r['inf_id']} ({r['method']})")
+            else:
+                print(f"  -> used as a premise by {r['inf_id']} ({r['method']})")
     elif paper_id:
         paper_status(paper_id)
         rows = _run(
@@ -299,6 +451,198 @@ def show(claim_id: str | None, paper_id: str | None) -> None:
     else:
         print("error: pass --claim or --paper", file=sys.stderr)
         sys.exit(1)
+
+
+# --- GraphPatch: typed manifest + one atomic transaction --------------------
+
+PATCH_HELP = """\
+GraphPatch JSON schema (see docs/paper_ingestion.md for the full workflow):
+
+{
+  "paper_id": "...",
+  "nodes_to_create": [
+    {"tmp_id": "tmp1", "claim_type": "theorem", "status": "proven", "domain_tags": [],
+     "representations": [{"modality": "nl", "content": "...", "source_item": "paperX.theorem1", "confidence": 0.9}]}
+  ],
+  "nodes_to_reuse": [
+    {"existing_claim_id": "c_abc123",
+     "representations": [{"modality": "nl", "content": "...", "source_item": "paperX.theorem2", "confidence": 0.85}]}
+  ],
+  "inference_nodes": [
+    {"tmp_id": "inf1", "method": "DESCENT_LEMMA", "reasoning": "...",
+     "premises": ["tmp1", "c_existing1"], "conclusion": "tmp2"}
+  ],
+  "equivalence_edges": [{"type": "GENERALIZES", "from": "tmp1", "to": "c_existing2", "confidence": 0.8}],
+  "contradiction_edges": [{"from": "tmp1", "to": "c_existing3", "confidence": 0.7}],
+  "provenance_links": []   # usually redundant with representations[].source_item; for extra links only
+}
+
+`tmp_id` values are resolved to real ids created within this same patch.
+Everything else must already exist. The whole patch is validated BEFORE
+anything is written, and applied in one transaction — either all of it
+lands or none of it does.
+"""
+
+
+def _validate_patch(patch: dict) -> tuple[list[str], set[str]]:
+    """Returns (errors, valid_reference_ids) — valid_reference_ids is every
+    tmp_id plus every existing id confirmed to be in the graph."""
+    errors: list[str] = []
+    tmp_ids = {n["tmp_id"] for n in patch.get("nodes_to_create", []) if "tmp_id" in n}
+    inf_tmp_ids = {n["tmp_id"] for n in patch.get("inference_nodes", []) if "tmp_id" in n}
+    all_tmp = tmp_ids | inf_tmp_ids
+
+    referenced_existing = set()
+    for n in patch.get("nodes_to_reuse", []):
+        referenced_existing.add(n["existing_claim_id"])
+    for inf in patch.get("inference_nodes", []):
+        for premise in inf.get("premises", []):
+            if premise not in all_tmp:
+                referenced_existing.add(premise)
+        if inf.get("conclusion") not in all_tmp:
+            referenced_existing.add(inf.get("conclusion"))
+    for edge in patch.get("equivalence_edges", []) + patch.get("contradiction_edges", []):
+        if edge["from"] not in all_tmp:
+            referenced_existing.add(edge["from"])
+        if edge["to"] not in all_tmp:
+            referenced_existing.add(edge["to"])
+
+    if referenced_existing:
+        found = _run(
+            "MATCH (c:Claim) WHERE c.id IN $ids RETURN collect(c.id) AS ids", ids=list(referenced_existing)
+        )[0]["ids"]
+        missing = referenced_existing - set(found)
+        for m in missing:
+            errors.append(f"referenced claim {m!r} does not exist and is not a tmp_id in this patch")
+
+    source_items = set()
+    for n in patch.get("nodes_to_create", []) + patch.get("nodes_to_reuse", []):
+        for rep in n.get("representations", []):
+            if rep.get("source_item"):
+                source_items.add(rep["source_item"])
+    if source_items:
+        found = _run(
+            "MATCH (s:Source) WHERE s.id IN $ids RETURN collect(s.id) AS ids", ids=list(source_items)
+        )[0]["ids"]
+        missing = source_items - set(found)
+        for m in missing:
+            errors.append(f"source item {m!r} does not exist — run scripts/doc_ir.py first")
+
+    for n in patch.get("nodes_to_create", []):
+        if n.get("claim_type") not in CLAIM_TYPES:
+            errors.append(f"nodes_to_create {n.get('tmp_id')}: invalid claim_type {n.get('claim_type')!r}")
+        if n.get("status") not in STATUSES:
+            errors.append(f"nodes_to_create {n.get('tmp_id')}: invalid status {n.get('status')!r}")
+    for edge in patch.get("equivalence_edges", []):
+        if edge["type"] not in EDGE_TYPES:
+            errors.append(f"equivalence_edges: invalid type {edge['type']!r}")
+
+    return errors, all_tmp | referenced_existing
+
+
+def apply_patch(patch_path: str) -> None:
+    with open(patch_path, encoding="utf-8") as f:
+        patch = json.load(f)
+
+    errors, _ = _validate_patch(patch)
+    if errors:
+        print("GraphPatch validation FAILED — nothing was written:", file=sys.stderr)
+        for e in errors:
+            print(f"  - {e}", file=sys.stderr)
+        sys.exit(1)
+
+    paper_id = patch.get("paper_id", GENERAL_RESEARCH_PAPER_ID)
+    id_map: dict[str, str] = {}  # tmp_id -> real id
+    created_claims = 0
+    reused_claims = 0
+    created_inferences = 0
+
+    def resolve(ref: str) -> str:
+        return id_map.get(ref, ref)
+
+    with _driver() as driver:
+        with driver.session() as session:
+
+            def write(tx):
+                nonlocal created_claims, reused_claims, created_inferences
+
+                for n in patch.get("nodes_to_create", []):
+                    claim_id = _new_id("c")
+                    id_map[n["tmp_id"]] = claim_id
+                    tx.run(
+                        """CREATE (c:Claim:Local {id: $id, claim_type: $t, status: $s,
+                                                   domain_tags: $tags, created_at: $now})""",
+                        id=claim_id, t=n["claim_type"], s=n["status"], tags=n.get("domain_tags", []), now=_now(),
+                    )
+                    created_claims += 1
+                    for rep in n.get("representations", []):
+                        _write_representation(tx, claim_id, rep, paper_id)
+
+                for n in patch.get("nodes_to_reuse", []):
+                    claim_id = n["existing_claim_id"]
+                    if "tmp_id" in n:
+                        id_map[n["tmp_id"]] = claim_id
+                    reused_claims += 1
+                    for rep in n.get("representations", []):
+                        _write_representation(tx, claim_id, rep, paper_id)
+
+                for inf in patch.get("inference_nodes", []):
+                    inf_id = _new_id("inf")
+                    if "tmp_id" in inf:
+                        id_map[inf["tmp_id"]] = inf_id
+                    tx.run(
+                        "CREATE (i:Inference {id: $id, method: $m, reasoning: $r, source_paper: $p, created_at: $now})",
+                        id=inf_id, m=inf["method"], r=inf["reasoning"], p=paper_id, now=_now(),
+                    )
+                    created_inferences += 1
+                    for premise in inf.get("premises", []):
+                        tx.run(
+                            "MATCH (i:Inference {id: $inf_id}), (c:Claim {id: $claim_id}) CREATE (i)-[:USES]->(c)",
+                            inf_id=inf_id, claim_id=resolve(premise),
+                        )
+                    tx.run(
+                        "MATCH (i:Inference {id: $inf_id}), (c:Claim {id: $claim_id}) CREATE (i)-[:PRODUCES]->(c)",
+                        inf_id=inf_id, claim_id=resolve(inf["conclusion"]),
+                    )
+
+                for edge in patch.get("equivalence_edges", []):
+                    tx.run(
+                        f"""MATCH (a:Claim {{id: $src}}), (b:Claim {{id: $dst}})
+                            CREATE (a)-[:{edge['type']} {{confidence: $conf, created_at: $now}}]->(b)""",
+                        src=resolve(edge["from"]), dst=resolve(edge["to"]), conf=edge.get("confidence"), now=_now(),
+                    )
+
+                for edge in patch.get("contradiction_edges", []):
+                    tx.run(
+                        """MATCH (a:Claim {id: $src}), (b:Claim {id: $dst})
+                           CREATE (a)-[:CONTRADICTS {confidence: $conf, created_at: $now}]->(b)""",
+                        src=resolve(edge["from"]), dst=resolve(edge["to"]), conf=edge.get("confidence"), now=_now(),
+                    )
+
+            session.execute_write(write)
+
+    print(f"patch applied: {created_claims} claims created, {reused_claims} reused, {created_inferences} inferences created")
+
+
+def _write_representation(tx, claim_id: str, rep: dict, default_paper: str) -> None:
+    content = rep["content"]
+    modality = rep["modality"]
+    embedding = _embed(content, input_type="document") if modality == "nl" else None
+    rep_id = _new_id("r")
+    tx.run(
+        """MATCH (c:Claim {id: $claim_id})
+           CREATE (r:Representation {id: $rep_id, modality: $modality, content: $content, content_hash: $hash,
+                                      lang_or_system: $los, source_paper: $paper,
+                                      confidence: $conf, created_at: $now, embedding: $embedding})-[:OF]->(c)""",
+        claim_id=claim_id, rep_id=rep_id, modality=modality, content=content, hash=_content_hash(content),
+        los=rep.get("lang_or_system"), paper=rep.get("source_paper", default_paper),
+        conf=rep.get("confidence", 0.8), now=_now(), embedding=embedding,
+    )
+    if rep.get("source_item"):
+        tx.run(
+            "MATCH (r:Representation {id: $rep_id}), (s:Source {id: $sid}) CREATE (r)-[:GROUNDED_IN]->(s)",
+            rep_id=rep_id, sid=rep["source_item"],
+        )
 
 
 def main() -> None:
@@ -321,10 +665,15 @@ def main() -> None:
     ppu.add_argument("--survey", action="store_true")
     pps = psub.add_parser("status")
     pps.add_argument("--id", required=True)
+    ppl = psub.add_parser("link")
+    ppl.add_argument("--paper", required=True)
+    ppl.add_argument("--claim", required=True)
+    ppl.add_argument("--relation", required=True, choices=PAPER_RELATIONS)
 
-    sp = sub.add_parser("search")
-    sp.add_argument("--text", required=True)
-    sp.add_argument("--top-k", type=int, default=5)
+    cnp = sub.add_parser("canonicalize")
+    cnp.add_argument("--text", required=True)
+    cnp.add_argument("--math")
+    cnp.add_argument("--top-k", type=int, default=5)
 
     cp = sub.add_parser("claim")
     csub = cp.add_subparsers(dest="claim_cmd", required=True)
@@ -338,25 +687,31 @@ def main() -> None:
     ccr.add_argument("--content", required=True)
     ccr.add_argument("--lang-or-system")
     ccr.add_argument("--paper", required=True)
-    ccr.add_argument("--span")
+    ccr.add_argument("--source-item", help="doc_ir.py item id this came from — required for real paper ingestion")
     ccr.add_argument("--confidence", type=float, default=0.8)
     ccl = csub.add_parser("link")
     ccl.add_argument("--type", required=True, choices=EDGE_TYPES)
     ccl.add_argument("--from", dest="src", required=True)
     ccl.add_argument("--to", dest="dst", required=True)
     ccl.add_argument("--confidence", type=float, default=None)
+    ccp = csub.add_parser("promote")
+    ccp.add_argument("--claim", required=True)
 
-    pfp = sub.add_parser("proofstep")
-    pfsub = pfp.add_subparsers(dest="proofstep_cmd", required=True)
-    pfc = pfsub.add_parser("create")
-    pfc.add_argument("--route", required=True)
-    pfc.add_argument("--paper", required=True)
-    pfu = pfsub.add_parser("uses")
-    pfu.add_argument("--proofstep", required=True)
-    pfu.add_argument("--claim", required=True)
-    pfpr = pfsub.add_parser("produces")
-    pfpr.add_argument("--proofstep", required=True)
-    pfpr.add_argument("--claim", required=True)
+    ip = sub.add_parser("inference")
+    isub = ip.add_subparsers(dest="inference_cmd", required=True)
+    ic = isub.add_parser("create")
+    ic.add_argument("--method", required=True)
+    ic.add_argument("--reasoning", required=True)
+    ic.add_argument("--paper", required=True)
+    iu = isub.add_parser("uses")
+    iu.add_argument("--inference", required=True)
+    iu.add_argument("--claim", required=True)
+    ipr = isub.add_parser("produces")
+    ipr.add_argument("--inference", required=True)
+    ipr.add_argument("--claim", required=True)
+
+    apy = sub.add_parser("apply-patch", epilog=PATCH_HELP, formatter_class=argparse.RawDescriptionHelpFormatter)
+    apy.add_argument("patch_file")
 
     shp = sub.add_parser("show")
     shp.add_argument("--claim")
@@ -373,24 +728,30 @@ def main() -> None:
             paper_upsert(args.id, args.title, args.survey)
         elif args.paper_cmd == "status":
             paper_status(args.id)
-    elif args.cmd == "search":
-        search(args.text, args.top_k)
+        elif args.paper_cmd == "link":
+            paper_link(args.paper, args.claim, args.relation)
+    elif args.cmd == "canonicalize":
+        canonicalize(args.text, args.math, args.top_k)
     elif args.cmd == "claim":
         if args.claim_cmd == "create":
             tags = [t.strip() for t in args.domain_tags.split(",") if t.strip()]
             claim_create(args.type, args.status, tags)
         elif args.claim_cmd == "represent":
             claim_represent(args.claim, args.modality, args.content, args.lang_or_system,
-                             args.paper, args.span, args.confidence)
+                             args.paper, args.source_item, args.confidence)
         elif args.claim_cmd == "link":
             claim_link(args.type, args.src, args.dst, args.confidence)
-    elif args.cmd == "proofstep":
-        if args.proofstep_cmd == "create":
-            proofstep_create(args.route, args.paper)
-        elif args.proofstep_cmd == "uses":
-            proofstep_edge("USES", args.proofstep, args.claim)
-        elif args.proofstep_cmd == "produces":
-            proofstep_edge("PRODUCES", args.proofstep, args.claim)
+        elif args.claim_cmd == "promote":
+            claim_promote(args.claim)
+    elif args.cmd == "inference":
+        if args.inference_cmd == "create":
+            inference_create(args.method, args.reasoning, args.paper)
+        elif args.inference_cmd == "uses":
+            inference_edge("USES", args.inference, args.claim)
+        elif args.inference_cmd == "produces":
+            inference_edge("PRODUCES", args.inference, args.claim)
+    elif args.cmd == "apply-patch":
+        apply_patch(args.patch_file)
     elif args.cmd == "show":
         show(args.claim, args.paper)
 
