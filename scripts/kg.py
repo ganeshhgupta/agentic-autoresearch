@@ -84,8 +84,9 @@ EDGE_TYPES = [
     "CONTRADICTS", "SUPPORTS", "LED_TO", "RELATED_TO",
 ]
 PAPER_RELATIONS = ["ASSERTS", "USES", "CHALLENGES"]
-CLAIM_TYPES = ["definition", "axiom", "theorem", "lemma", "corollary", "conjecture",
-               "algorithm", "empirical-result", "construction", "note"]
+CLAIM_TYPES = ["definition", "assumption", "axiom", "theorem", "lemma", "corollary",
+               "claim", "conjecture", "algorithm", "empirical-result", "observation",
+               "construction", "bound", "counterexample", "note"]
 STATUSES = ["proven", "conjectured", "empirically-supported", "falsified", "asserted"]
 MODALITIES = ["nl", "formal", "code"]
 PAPER_REVIEW_STATUSES = ["in_progress", "needs_review", "resolved"]

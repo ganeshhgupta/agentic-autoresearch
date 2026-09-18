@@ -146,8 +146,10 @@ For each atomic unit:
     uv run scripts/kg.py claim represent --claim <new-id> --modality nl \
       --content "..." --paper <paper-id> --source-item <graph-a-item-id>
     ```
-    `--type` is one of: definition, axiom, theorem, lemma, corollary,
-    conjecture, algorithm, empirical-result, construction, note.
+    `--type` is one of: definition, assumption, axiom, theorem, lemma,
+    corollary, claim (a general provable statement that doesn't fit a
+    more specific type), conjecture, algorithm, empirical-result,
+    observation, construction, bound, counterexample, note.
     `--status` is one of: proven, conjectured, empirically-supported,
     falsified, asserted.
 
