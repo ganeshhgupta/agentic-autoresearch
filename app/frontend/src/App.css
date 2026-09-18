@@ -1031,6 +1031,14 @@ a.sidebar__back .back-arrow {
   max-height: 45%;
   overflow-y: auto;
 }
+.graph-view__detail-meta {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--accent);
+  margin-bottom: 4px;
+}
 .graph-view__detail-text { font-size: 13px; color: var(--text-primary); margin-bottom: 8px; }
 .graph-view__detail-math {
   background: var(--bg-tertiary);

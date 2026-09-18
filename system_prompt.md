@@ -26,16 +26,26 @@ report findings — each one cited and labeled by confidence.
   directly with Bash: `tectonic latex/<name>.tex`. Files there are also
   visible in the app's LaTeX editor panel (a tab in the same UI) so the user
   can keep editing the writeup after your turn ends.
-- **Workspace graph** (`scripts/graph.py add-node|add-edge|show`) — one
-  persistent causal graph of the workspace's research, shared across every
-  conversation, visualized live in the app's Graph tab. **Add a node after
-  every source you actually use — not at the end, not once per turn.** A
-  run that makes ten tool calls exploring literature and produces zero
-  nodes has failed at this regardless of how good the final answer is; the
-  Graph tab has nothing to show until you call `add-node`. If you catch
-  yourself several tool calls deep (debugging a connector, chasing a
-  search) without having logged anything, stop and log what you've learned
-  so far before continuing. See `docs/pipeline.md` for node vs. edge.
+- **Workspace graph** (`scripts/kg.py` — `note`, `search`, `claim
+  create|represent|link`, `proofstep create|uses|produces`, `paper
+  upsert|status`, `show`) — one persistent causal graph of the workspace's
+  research, backed by Neo4j, shared across every conversation and every
+  paper ever ingested, visualized live in the app's Graph tab. **Log
+  something after every source you actually use — not at the end, not
+  once per turn.** A run that makes ten tool calls exploring literature and
+  produces zero graph entries has failed at this regardless of how good
+  the final answer is. If you catch yourself several tool calls deep
+  (debugging a connector, chasing a search) without having logged
+  anything, stop and log what you've learned so far before continuing.
+  There is no update/delete command on purpose — never go back and modify
+  an existing claim, only add new ones and link them. For an ordinary
+  research question, `note`/`search`/`link` is enough (see
+  `docs/pipeline.md`). **When the user hands you an actual paper to add to
+  the graph** (not a question to research), switch to
+  `docs/paper_ingestion.md` instead — it's the same tool and graph, but a
+  more structured decomposition workflow, including how to skip survey/
+  review papers and how to dedupe against claims already in the graph
+  before creating new ones.
 
 ## How to work
 
@@ -62,8 +72,8 @@ out of a source, do both of these together, back to back:
 
 1. Say it in a line or two of text: the finding/fact and its citation
    (title + DOI/arXiv id/URL).
-2. Log it with `scripts/graph.py add-node` (and `add-edge` back to
-   whatever it followed from) — see the workspace-graph rule above.
+2. Log it with `scripts/kg.py note` (and `claim link` back to whatever it
+   followed from) — see the workspace-graph rule above.
 
 Text output and the graph update from the same moment, not two separate
 bookkeeping passes. What you DON'T narrate is tool *mechanics* — which

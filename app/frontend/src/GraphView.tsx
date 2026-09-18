@@ -22,23 +22,29 @@ mermaid.initialize({
 })
 
 // Mermaid node ids must be plain identifiers, and labels can't contain
-// unescaped quotes/brackets — our graph.py already emits ids like "n1", but
-// text is free-form agent output, so sanitize defensively.
+// unescaped quotes/brackets/parens — our graph.py already emits ids like
+// "n1", but text is free-form agent output (full sentences with commas,
+// parens, colons, em-dashes), so sanitize defensively. Both node labels
+// ["..."] and edge labels |"..."| must be quoted — an unquoted edge label
+// (the old `|text|` form) breaks on the first comma/paren inside it, which
+// is exactly what real agent-written labels contain.
 function escapeLabel(s: string): string {
   return s
     .replace(/"/g, "'")
     .replace(/[\n\r]/g, ' ')
-    .replace(/[[\]{}|]/g, '')
+    .replace(/[[\]{}|#]/g, '')
     .slice(0, 70)
 }
 
 function buildDiagram(nodes: GraphNode[], edges: GraphEdge[]): string {
   const lines = ['flowchart TD']
   for (const n of nodes) {
-    lines.push(`  ${n.id}["${escapeLabel(n.text)}"]`)
+    // ProofSteps get a diamond so they read as "derivation step", not a claim.
+    const label = escapeLabel(n.text)
+    lines.push(n.kind === 'proofstep' ? `  ${n.id}{"${label}"}` : `  ${n.id}["${label}"]`)
   }
   for (const e of edges) {
-    const label = e.label ? `|${escapeLabel(e.label)}|` : ''
+    const label = e.label ? `|"${escapeLabel(e.label)}"|` : ''
     lines.push(`  ${e.from} -->${label} ${e.to}`)
   }
   return lines.join('\n')
@@ -112,7 +118,10 @@ export default function GraphView() {
               className={`graph-view__node-row ${selected === n.id ? 'graph-view__node-row--active' : ''}`}
               onClick={() => setSelected(n.id === selected ? null : n.id)}
             >
-              <span className="graph-view__node-id">{n.id}</span>
+              <span className="graph-view__node-id">
+                {n.id}
+                {n.claim_type && ` · ${n.claim_type}`}
+              </span>
               <span className="graph-view__node-text">{n.text}</span>
             </button>
           ))}
@@ -120,6 +129,13 @@ export default function GraphView() {
 
         {selectedNode && (
           <div className="graph-view__detail">
+            {(selectedNode.claim_type || selectedNode.status) && (
+              <div className="graph-view__detail-meta">
+                {selectedNode.claim_type}
+                {selectedNode.claim_type && selectedNode.status && ' · '}
+                {selectedNode.status}
+              </div>
+            )}
             <div className="graph-view__detail-text">{selectedNode.text}</div>
             {selectedNode.math && <MathBlock tex={selectedNode.math} />}
             {selectedNode.code && (

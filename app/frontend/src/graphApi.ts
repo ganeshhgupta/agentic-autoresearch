@@ -2,6 +2,9 @@ import { apiUrl } from './api'
 
 export type GraphNode = {
   id: string
+  kind?: 'claim' | 'proofstep'
+  claim_type?: string
+  status?: string
   text: string
   math?: string
   code?: string

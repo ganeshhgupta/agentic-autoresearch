@@ -93,6 +93,12 @@ APP_PREFIX = os.environ.get("APP_PREFIX", "").rstrip("/")
 
 app = FastAPI()
 
+
+@app.on_event("startup")
+async def _init_graph_schema() -> None:
+    await asyncio.to_thread(graph.init_schema)
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://localhost:5174"],

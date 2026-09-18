@@ -76,30 +76,32 @@ counterexample in prose.
 
 ## Maintaining the workspace graph (every stage)
 
-Alongside all of the above, keep `scripts/graph.py` up to date as you go —
+Alongside all of the above, keep `scripts/kg.py` up to date as you go —
 this is the one persistent, continuously-growing record of the workspace's
 research, shared across every conversation, and the app's Graph tab
 visualizes it live as you write to it. Don't treat it as an end-of-turn
-summary step; update it *during* the pipeline, node by node:
+summary step; update it *during* the pipeline, node by node. (If the user
+handed you a specific paper to ingest rather than a research question, use
+`docs/paper_ingestion.md` instead — it's the same graph and tool, just a
+more structured workflow suited to decomposing one paper.)
 
-- **Add a node** (`uv run scripts/graph.py add-node --text "..."`) for
-  anything that stands as its own claim: a fact pulled from a source
-  (stage 2), a gap or contradiction you found (stage 4), a hypothesis
-  (stage 6), a novelty-check result (stage 7), a falsification result
-  (stage 8), a synthesis conclusion (stage 10). Add `--math "..."` when the
-  claim has a precise formal statement, and `--code "..." --code-lang ...`
-  when it's backed by a snippet (e.g. what you ran to check it).
-- **Add an edge** (`add-edge --from <id> --to <id> --label "..."`) linking
-  each new node to whatever node(s) it causally followed from. A label like
-  `supports`, `contradicts`, `falsifies`, `refines`, or `led to` is more
-  useful than an unlabeled edge — this IS the causal chain the graph exists
-  to show, not an afterthought.
-- Run `show` first if you're not sure what's already in the graph (e.g.
-  resuming a workspace that has prior research), so you link into existing
-  nodes instead of duplicating them.
-
-A node with no edges is just a fact sitting in isolation — always ask what
-it followed from and connect it.
+- **Log a note** (`uv run scripts/kg.py note --text "..."`) for anything
+  that stands as its own claim: a fact pulled from a source (stage 2), a
+  gap or contradiction you found (stage 4), a hypothesis (stage 6), a
+  novelty-check result (stage 7), a falsification result (stage 8), a
+  synthesis conclusion (stage 10). Add `--math "..."` when the claim has a
+  precise formal statement, and `--code "..." --code-lang ...` when it's
+  backed by a snippet (e.g. what you ran to check it).
+- **Link it** (`uv run scripts/kg.py claim link --type <TYPE> --from <id>
+  --to <id>`) to whatever node(s) it causally followed from — `--type` is
+  one of `SUPPORTS`, `CONTRADICTS`, `LED_TO`, `GENERALIZES`,
+  `SPECIALIZES`, `EQUIVALENT_TO`, `ANALOGOUS_TO`, `RELATED_TO`. This IS the
+  causal chain the graph exists to show, not an afterthought — a node with
+  no edges is just a fact sitting in isolation.
+- Run `uv run scripts/kg.py search --text "..."` before logging something
+  that might already be in the graph (e.g. resuming a workspace with prior
+  research), so you link into existing nodes instead of duplicating them —
+  `note` doesn't dedupe for you.
 
 ## Writing up findings (stage 10)
 

@@ -21,6 +21,14 @@ RUN npm run build
 
 FROM python:3.13-slim AS prod
 
+# python:3.13-slim ships no locale, which defaults argv/stdio decoding to
+# ASCII — any non-ASCII text the agent writes via a Bash tool argument (an
+# em-dash, an accented name) then gets mis-decoded and re-encoded as
+# mojibake. Force UTF-8 everywhere regardless of locale.
+ENV LANG=C.UTF-8
+ENV PYTHONUTF8=1
+ENV PYTHONIOENCODING=utf-8
+
 RUN apt-get update \
  && apt-get install -y --no-install-recommends nodejs npm curl ca-certificates \
  && rm -rf /var/lib/apt/lists/*

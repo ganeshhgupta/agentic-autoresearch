@@ -33,6 +33,11 @@ services:
       # --- Lean 4 + Mathlib service (see lean-service/, runs elsewhere) ---
       - LEAN_SERVICE_URL=${LEAN_SERVICE_URL:-}
       - LEAN_SERVICE_TOKEN=${LEAN_SERVICE_TOKEN:-}
+      # --- Knowledge graph (scripts/kg.py): Neo4j Aura + Voyage embeddings ---
+      - NEO4J_URI=${NEO4J_URI:-}
+      - NEO4J_USER=${NEO4J_USER:-}
+      - NEO4J_PASSWORD=${NEO4J_PASSWORD:-}
+      - VOYAGE_API_KEY=${VOYAGE_API_KEY:-}
       # --- Langfuse (optional tracing; no-op unless both keys set) ---
       - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY:-}
       - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY:-}
