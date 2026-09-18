@@ -11,10 +11,14 @@
   --swatch-4: #6b9c73; /* medium sage */
   --swatch-5: #d3d3d3; /* light grey */
 
-  /* Backgrounds */
+  /* Backgrounds — surfaces stay mostly white with the swatches only as a
+     light tint. Using the raw swatch colors here (tried first) made every
+     input/card a solid saturated green block instead of a subtle surface —
+     color-mix toward white keeps them traceable to the same 5 swatches
+     without that. */
   --bg-primary: #ffffff;
-  --bg-secondary: var(--swatch-5);
-  --bg-tertiary: var(--swatch-1);
+  --bg-secondary: color-mix(in srgb, var(--swatch-5) 35%, white);
+  --bg-tertiary: color-mix(in srgb, var(--swatch-1) 45%, white);
   --bg-hover: color-mix(in srgb, var(--swatch-3) 8%, transparent);
 
   /* Text */
