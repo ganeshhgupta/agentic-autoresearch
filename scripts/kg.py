@@ -53,7 +53,7 @@ Usage:
     uv run scripts/kg.py paper status --id <arxiv-id-or-doi>
     uv run scripts/kg.py paper link --paper <id> --claim <id> --relation ASSERTS|USES|CHALLENGES [--contribution-type reused|novel-connection|new-claim|generalization|refutation|application]
     uv run scripts/kg.py paper flag --id <arxiv-id-or-doi> --review-status in_progress|needs_review|resolved
-    uv run scripts/kg.py canonicalize --text "..." [--math "..."] [--top-k 5]
+    uv run scripts/kg.py canonicalize --text "..." [--math "..."] [--code "..."] [--top-k 5]
     uv run scripts/kg.py claim create --type theorem --status proven [--domain-tags "MSC:11A07"]
     uv run scripts/kg.py claim represent --claim <id> --modality nl --content "..." --paper <paper-id> --source-item <doc-ir-id> [--confidence 0.9]
     uv run scripts/kg.py claim link --type EQUIVALENT_TO --from <id> --to <id> [--confidence 0.8]
@@ -240,16 +240,40 @@ def paper_link(paper_id: str, claim_id: str, relation: str, contribution_type: s
         print(f"{paper_id} -{relation}-> {claim_id}")
 
 
-def canonicalize(text: str, math: str | None, top_k: int) -> None:
+def _ast_dump(code: str) -> str | None:
+    """Best-effort structural normalization of Python code for the code
+    canonicalization tier: parses to an AST and dumps its structure,
+    which is invariant to whitespace/comments/formatting but NOT to
+    identifier renaming (that would need alpha-equivalence normalization,
+    not attempted here — this catches copy-with-reformatting duplicates,
+    not copy-with-renamed-variables ones). Returns None on any parse
+    failure (non-Python code, syntax errors) — same fallback pattern as
+    _sympify: this tier just skips when it can't apply."""
+    import ast
+
+    try:
+        return ast.dump(ast.parse(code))
+    except Exception:  # noqa: BLE001 - any parse failure just means "can't use this tier"
+        return None
+
+
+def canonicalize(text: str, math: str | None, top_k: int, code: str | None = None) -> None:
     """The cascade: structural exact match -> symbolic (math only) ->
-    lexical overlap -> dense embedding -> LLM judge. Tiers 1-4 only SURFACE
-    candidates with a tier label; nothing there merges anything. Tier 5 asks
-    an isolated LLM call to classify the single best surfaced candidate
-    (EXACT_SAME/EQUIVALENT/GENERALIZES/SPECIALIZES/APPROXIMATES/CONTRADICTS/
-    RELATED/NEW) — still advisory, not a decision made for you: read its
-    reasoning, then act via `claim represent` (reuse) or `claim create` +
-    `claim link` (new + edge), citing the tier that justified it as
-    `--basis` in a GraphPatch's equivalence_edges/nodes_to_reuse entries."""
+    code structural/AST (code only, Python) -> lexical overlap -> dense
+    embedding -> LLM judge. Every tier before the LLM judge only SURFACES
+    candidates with a tier label; nothing there merges anything. The LLM
+    judge asks an isolated call to classify the single best surfaced
+    candidate (EXACT_SAME/EQUIVALENT/GENERALIZES/SPECIALIZES/APPROXIMATES/
+    CONTRADICTS/RELATED/NEW) — still advisory, not a decision made for
+    you: read its reasoning, then act via `claim represent` (reuse) or
+    `claim create` + `claim link` (new + edge), citing the tier that
+    justified it as `--basis` in a GraphPatch's equivalence_edges/
+    nodes_to_reuse entries. Physics (units/dimensions/coordinate system)
+    and ML-experiment (dataset/split/metric/hyperparameters/seed) specific
+    canonicalizers are NOT implemented — those need a real domain schema
+    to compare against, which is a design decision, not a generic
+    algorithm; until one exists, physics/ML claims fall back to the
+    generic NL text tiers, which is a real limitation, not a silent gap."""
     found_any = False
     best_lexical = None
     best_embedding = None
@@ -288,6 +312,30 @@ def canonicalize(text: str, math: str | None, top_k: int) -> None:
             if matches:
                 found_any = True
                 print("=== TIER 2: symbolic equivalence (SymPy) ===")
+                for m in matches:
+                    print(f"  [{m['claim_id']}] {m['content'][:150]}")
+
+    # Tier 2b: code structural match (AST dump comparison, Python only).
+    # Separate from the text tiers below — code should never be judged by
+    # word overlap or embedding similarity on its source text; two
+    # implementations of the same algorithm in different variable names
+    # would score low here even though the algorithm is identical, and
+    # that's the honest limit of this tier (see _ast_dump's docstring),
+    # not something to paper over with a text-similarity fallback.
+    if code:
+        query_dump = _ast_dump(code)
+        if query_dump is not None:
+            candidates = _run(
+                "MATCH (r:Representation {modality: 'code'})-[:OF]->(c:Claim) RETURN c.id AS claim_id, r.content AS content, r.lang_or_system AS lang LIMIT 500"
+            )
+            matches = [
+                cand for cand in candidates
+                if (cand.get("lang") or "").lower() in ("python", "py", "")
+                and _ast_dump(cand["content"]) == query_dump
+            ]
+            if matches:
+                found_any = True
+                print("=== TIER 2b: code structural match (AST) ===")
                 for m in matches:
                     print(f"  [{m['claim_id']}] {m['content'][:150]}")
 
@@ -753,6 +801,7 @@ def main() -> None:
     cnp = sub.add_parser("canonicalize")
     cnp.add_argument("--text", required=True)
     cnp.add_argument("--math")
+    cnp.add_argument("--code", help="Python source, for the AST structural-match tier")
     cnp.add_argument("--top-k", type=int, default=5)
 
     cp = sub.add_parser("claim")
@@ -813,7 +862,7 @@ def main() -> None:
         elif args.paper_cmd == "flag":
             paper_flag(args.id, args.review_status)
     elif args.cmd == "canonicalize":
-        canonicalize(args.text, args.math, args.top_k)
+        canonicalize(args.text, args.math, args.top_k, args.code)
     elif args.cmd == "claim":
         if args.claim_cmd == "create":
             tags = [t.strip() for t in args.domain_tags.split(",") if t.strip()]

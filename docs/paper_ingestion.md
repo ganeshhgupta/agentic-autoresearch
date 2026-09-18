@@ -111,11 +111,16 @@ For each atomic unit:
 2. **Run it through the canonicalization cascade before creating
    anything new:**
    ```
-   uv run scripts/kg.py canonicalize --text "<the NL statement>" [--math "<latex, if applicable>"]
+   uv run scripts/kg.py canonicalize --text "<the NL statement>" [--math "<latex, if applicable>"] [--code "<python, if applicable>"]
    ```
    This runs structural (exact-hash), symbolic (SymPy, when `--math` is
-   given), lexical, dense-embedding, and LLM-judge tiers in sequence and
-   prints candidates from each, tagged Local or Global. The LLM-judge
+   given), code-structural (AST comparison, Python only, when `--code`
+   is given), lexical, dense-embedding, and LLM-judge tiers in sequence
+   and prints candidates from each, tagged Local or Global. There's no
+   physics- or ML-experiment-specific tier (units/dimensions, or
+   dataset/metric/hyperparameters) — those claims fall back to the
+   generic text tiers, which is a known limitation, not something to
+   work around by hand. The LLM-judge
    tier classifies the single best lexical/embedding candidate into
    EXACT_SAME/EQUIVALENT/GENERALIZES/SPECIALIZES/APPROXIMATES/
    CONTRADICTS/RELATED/NEW with a short reasoning line. **Embedding-tier
