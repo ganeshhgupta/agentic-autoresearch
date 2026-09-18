@@ -15,7 +15,14 @@ scripts/fetch_paper.py  ->  scripts/doc_ir.py  ->  scripts/kg.py
 ```
 
 Read `scripts/kg.py`'s module docstring now if you haven't already this
-session — it has the full schema and the `apply-patch` JSON format.
+session — it has the full schema and the `apply-patch` JSON format. A
+fourth tool, `scripts/critics.py`, reviews a patch for real defects
+(atomicity, inference validity, scope, provenance, canonicalization
+basis) before you commit it — see "The repair loop" below. Treat this
+whole pipeline like a compiler, not a conversation: parse, represent,
+atomize, reconstruct the inference, get it reviewed, canonicalize,
+transactionally merge. Each stage's output is the next stage's input,
+checked before it's trusted.
 
 ## The one rule that matters most
 
@@ -107,14 +114,20 @@ For each atomic unit:
    uv run scripts/kg.py canonicalize --text "<the NL statement>" [--math "<latex, if applicable>"]
    ```
    This runs structural (exact-hash), symbolic (SymPy, when `--math` is
-   given), lexical, and dense-embedding tiers in sequence and prints
-   candidates from each, tagged Local or Global. **Embedding-tier
+   given), lexical, dense-embedding, and LLM-judge tiers in sequence and
+   prints candidates from each, tagged Local or Global. The LLM-judge
+   tier classifies the single best lexical/embedding candidate into
+   EXACT_SAME/EQUIVALENT/GENERALIZES/SPECIALIZES/APPROXIMATES/
+   CONTRADICTS/RELATED/NEW with a short reasoning line. **Embedding-tier
    matches are candidates only — never treat a high embedding score
-   alone as grounds to reuse a claim id.** A structural or symbolic exact
-   match is safe to reuse automatically; a lexical or embedding match
-   needs you to actually read the candidate and judge whether it's the
+   alone as grounds to reuse a claim id, and never write `"basis":
+   "embedding"` in a patch (see below) — `critics.py` will block it.** A
+   structural or symbolic exact match is safe to reuse automatically; a
+   lexical, embedding, or LLM-judge match needs you to actually read the
+   candidate (and the judge's reasoning) and decide whether it's the
    same claim, a generalization/specialization of it, or just
-   topically related.
+   topically related — the judge tier is advisory, not a decision made
+   for you.
 
 3a. **If it's the same claim** — reuse that Claim id. Add this paper's
     version as a new representation, keeping existing ones untouched:
@@ -182,11 +195,22 @@ For each atomic unit:
 7. **Record the paper's overall relationship to claims it didn't
    originate**, once you've placed its own contributions:
    ```
-   uv run scripts/kg.py paper link --paper <paper-id> --claim <id> --relation ASSERTS
+   uv run scripts/kg.py paper link --paper <paper-id> --claim <id> --relation ASSERTS \
+     --contribution-type new-claim
    ```
    `--relation` is one of `ASSERTS` (this paper's own claim),
    `USES` (relies on a prior claim without contesting it), `CHALLENGES`
    (disputes or falsifies a prior claim).
+
+   `--contribution-type` (optional, but worth setting deliberately) is
+   the Contribution Differencer: most papers don't introduce a wholly
+   new claim for most things they touch — say what kind of contribution
+   this really is, one of `reused` (cites/uses it as-is), `novel-
+   connection` (links two existing claims no one had connected),
+   `new-claim` (genuinely new), `generalization`, `refutation`, or
+   `application` (applies an existing result to a new setting/dataset).
+   This is usually more informative than the bare relation type alone —
+   don't skip it just because `--relation` is already required.
 
 ## Batch writes: apply-patch
 
@@ -206,11 +230,65 @@ Graph A, every enum value is legal) before writing anything — a
 validation failure writes nothing at all, so it's safe to retry after
 fixing the reported errors.
 
+Every entry in `nodes_to_reuse` and `equivalence_edges` should carry a
+`"basis"` field — `structural`, `symbolic`, `lexical`, or `llm_judge` —
+naming which canonicalization tier actually justified the reuse/
+equivalence decision. `apply-patch` stores it as an edge property for
+audit purposes but doesn't enforce it; `critics.py` (next) does.
+
+## The repair loop: run critics before you commit
+
+**Always run `scripts/critics.py review` on a patch before
+`apply-patch`, for anything more consequential than a trivial note.**
+This is a separate reasoning pass from whatever built the patch — the
+same pass that wrote a claim/inference should not also be the one that
+blesses it into the graph. It runs 5 specialized critics:
+
+- **Provenance** — every representation needs a real `source_item` in
+  Graph A. No source span, no promotion. (Deterministic check.)
+- **Canonicalization** — every reuse/equivalence decision needs a
+  defensible `basis`; "embedding" alone is always rejected. (Deterministic
+  check.)
+- **Atomicity** — is each new claim minimal, single-conclusion, and
+  independently truth-evaluable, not a bundle of several claims?
+- **Scope** — does each claim state its assumptions explicitly, without
+  overclaiming generality beyond what's actually supported?
+- **Inference** (the most important one) — does each conclusion actually
+  follow from exactly its stated premises via the stated method, and is
+  the premise set minimal (would it still hold with one premise removed)?
+
+```
+uv run scripts/critics.py review <patch.json>
+```
+Exits 1 with a `BLOCKED` summary if anything is blocking, 0 with `PASS`
+otherwise. On a `BLOCKED` result:
+
+1. Read the specific findings — they name the `tmp_id` and the defect.
+2. Fix the patch (split a compound claim, narrow an overclaimed scope,
+   drop a non-minimal premise, add the missing `source_item`/`basis`)
+   and re-run `critics.py review`.
+3. Repeat up to **4 total attempts**. If it's still blocked after that,
+   don't force it through and don't leave it silently half-done: run
+   ```
+   uv run scripts/kg.py paper flag --id <paper-id> --review-status needs_review
+   ```
+   and say so plainly in your report back to the user — a paper stuck at
+   `needs_review` is a legitimate, visible stopping point, not a failure
+   to hide.
+
+Only run `apply-patch` on a patch that came back `PASS` (or where every
+remaining finding is a non-blocking `warning` — those mean a critic call
+itself failed, e.g. an infra hiccup, not that the content is bad; use
+judgment, and re-run once before treating a warning as acceptable to
+proceed past).
+
 ## Step 4 — report back
 
 Same as the general pipeline: text output only for substance (say what
 you found, cite it), tool calls stay silent. At the end of ingesting a
 paper, give a short summary: how many claims were new vs. reused
 (deduped) via canonicalization matches, how many were promoted to
-Global, and anything notably novel or connected to prior work already in
-the graph.
+Global, what kind of contribution the paper actually made per claim
+(reused/novel-connection/new-claim/generalization/refutation/
+application), anything notably novel or connected to prior work already
+in the graph, and whether anything ended up flagged `needs_review`.

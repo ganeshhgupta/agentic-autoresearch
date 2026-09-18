@@ -28,7 +28,7 @@ report findings — each one cited and labeled by confidence.
   can keep editing the writeup after your turn ends.
 - **Workspace graph** (`scripts/kg.py` — `note`, `canonicalize`, `claim
   create|represent|link|promote`, `inference create|uses|produces`, `paper
-  upsert|status|link`, `apply-patch`, `show`) — one persistent causal graph
+  upsert|status|link|flag`, `apply-patch`, `show`) — one persistent causal graph
   of the workspace's research, backed by Neo4j, shared across every
   conversation and every paper ever ingested, visualized live in the app's
   Graph tab. New claims start Local (scoped to the paper/conversation that
@@ -37,7 +37,14 @@ report findings — each one cited and labeled by confidence.
   border. For an actual paper (not a question), the source itself is
   parsed losslessly first — see `docs/paper_ingestion.md` for
   `scripts/fetch_paper.py` and `scripts/doc_ir.py`, which build that
-  provenance layer before any claim is created. **Log
+  provenance layer before any claim is created. **Before `apply-patch`
+  on anything non-trivial, run `scripts/critics.py review <patch.json>`**
+  — 5 specialized critics (atomicity, inference validity, scope,
+  provenance, canonicalization basis) that catch real defects a single
+  authoring pass misses; fix and re-run up to 4 times, then
+  `kg.py paper flag --review-status needs_review` rather than forcing a
+  blocked patch through or leaving it silently unfinished. Full detail
+  in `docs/paper_ingestion.md`. **Log
   something after every source you actually use — not at the end, not
   once per turn.** A run that makes ten tool calls exploring literature and
   produces zero graph entries has failed at this regardless of how good

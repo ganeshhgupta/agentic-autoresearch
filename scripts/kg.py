@@ -15,11 +15,21 @@ Schema:
     (:Inference {id, method, reasoning, source_paper, created_at})
       -[:USES]->(:Claim)          -- one edge per premise (a set, not a chain)
       -[:PRODUCES]->(:Claim)      -- the conclusion
-    (:Paper {id, title, is_survey, ingested_at})
-      -[:ASSERTS|USES|CHALLENGES]->(:Claim:Global)
+    (:Paper {id, title, is_survey, ingested_at, review_status?})
+      -- review_status (`paper flag`): in_progress|needs_review|resolved —
+      -- backs the repair-loop's "unresolved items go to NEEDS_REVIEW" rule.
+      -[:ASSERTS|USES|CHALLENGES {created_at, contribution_type?}]->(:Claim:Global)
+      -- contribution_type (Contribution Differencer, set via `paper link
+      -- --contribution-type`): reused|novel-connection|new-claim|
+      -- generalization|refutation|application — most papers don't
+      -- introduce a wholly new claim, this records which kind of
+      -- contribution the paper actually made to each claim it touches.
       -[:CITES]->(:Paper)
     (:Claim)-[:EQUIVALENT_TO|GENERALIZES|SPECIALIZES|ANALOGOUS_TO
-              |CONTRADICTS|SUPPORTS|LED_TO|RELATED_TO {confidence?}]->(:Claim)
+              |CONTRADICTS|SUPPORTS|LED_TO|RELATED_TO {confidence?, basis?}]->(:Claim)
+      -- basis (optional, audit trail only): structural|symbolic|lexical|
+      -- llm_judge — which canonicalization tier actually justified this
+      -- edge. Never "embedding" — embedding only surfaces candidates.
 
 There is deliberately no update/delete command for Claim or Representation
 content — only create, represent, link, promote, and search/canonicalize.
@@ -41,7 +51,8 @@ Usage:
     uv run scripts/kg.py note --text "..." [--math "..."] [--code "..." --code-lang py]
     uv run scripts/kg.py paper upsert --id <arxiv-id-or-doi> --title "..." [--survey]
     uv run scripts/kg.py paper status --id <arxiv-id-or-doi>
-    uv run scripts/kg.py paper link --paper <id> --claim <id> --relation ASSERTS|USES|CHALLENGES
+    uv run scripts/kg.py paper link --paper <id> --claim <id> --relation ASSERTS|USES|CHALLENGES [--contribution-type reused|novel-connection|new-claim|generalization|refutation|application]
+    uv run scripts/kg.py paper flag --id <arxiv-id-or-doi> --review-status in_progress|needs_review|resolved
     uv run scripts/kg.py canonicalize --text "..." [--math "..."] [--top-k 5]
     uv run scripts/kg.py claim create --type theorem --status proven [--domain-tags "MSC:11A07"]
     uv run scripts/kg.py claim represent --claim <id> --modality nl --content "..." --paper <paper-id> --source-item <doc-ir-id> [--confidence 0.9]
@@ -66,6 +77,8 @@ from datetime import datetime, timezone
 import httpx
 from neo4j import GraphDatabase
 
+from llm_judge import judge
+
 EDGE_TYPES = [
     "EQUIVALENT_TO", "GENERALIZES", "SPECIALIZES", "ANALOGOUS_TO",
     "CONTRADICTS", "SUPPORTS", "LED_TO", "RELATED_TO",
@@ -75,6 +88,10 @@ CLAIM_TYPES = ["definition", "axiom", "theorem", "lemma", "corollary", "conjectu
                "algorithm", "empirical-result", "construction", "note"]
 STATUSES = ["proven", "conjectured", "empirically-supported", "falsified", "asserted"]
 MODALITIES = ["nl", "formal", "code"]
+PAPER_REVIEW_STATUSES = ["in_progress", "needs_review", "resolved"]
+CONTRIBUTION_TYPES = [
+    "reused", "novel-connection", "new-claim", "generalization", "refutation", "application",
+]
 
 VOYAGE_MODEL = "voyage-4-large"
 GENERAL_RESEARCH_PAPER_ID = "_general-research"  # synthetic Paper for note-taking outside paper ingestion
@@ -181,37 +198,60 @@ def paper_status(paper_id: str) -> None:
     rows = _run(
         """MATCH (p:Paper {id: $id})
            OPTIONAL MATCH (r:Representation {source_paper: $id})
-           RETURN p.title AS title, p.is_survey AS is_survey, count(DISTINCT r) AS representation_count""",
+           RETURN p.title AS title, p.is_survey AS is_survey, p.review_status AS review_status,
+                  count(DISTINCT r) AS representation_count""",
         id=paper_id,
     )
     if not rows or rows[0]["title"] is None:
         print(f"paper {paper_id!r} not yet in the graph")
         return
     row = rows[0]
-    print(f"{paper_id!r}: {row['title']}  survey={row['is_survey']}  representations_logged={row['representation_count']}")
+    line = f"{paper_id!r}: {row['title']}  survey={row['is_survey']}  representations_logged={row['representation_count']}"
+    if row["review_status"]:
+        line += f"  review_status={row['review_status']}"
+    print(line)
 
 
-def paper_link(paper_id: str, claim_id: str, relation: str) -> None:
+def paper_flag(paper_id: str, review_status: str) -> None:
+    rows = _run(
+        "MATCH (p:Paper {id: $id}) SET p.review_status = $status RETURN p.id AS id",
+        id=paper_id, status=review_status,
+    )
+    if not rows:
+        print(f"error: no such paper {paper_id}", file=sys.stderr)
+        sys.exit(1)
+    print(f"{paper_id}: review_status set to {review_status}")
+
+
+def paper_link(paper_id: str, claim_id: str, relation: str, contribution_type: str | None) -> None:
     rows = _run(
         f"""MATCH (p:Paper {{id: $paper_id}}), (c:Claim {{id: $claim_id}})
-            CREATE (p)-[:{relation} {{created_at: $now}}]->(c)
+            CREATE (p)-[:{relation} {{created_at: $now, contribution_type: $contribution_type}}]->(c)
             RETURN p.id AS p""",
-        paper_id=paper_id, claim_id=claim_id, now=_now(),
+        paper_id=paper_id, claim_id=claim_id, now=_now(), contribution_type=contribution_type,
     )
     if not rows:
         print("error: paper or claim not found", file=sys.stderr)
         sys.exit(1)
-    print(f"{paper_id} -{relation}-> {claim_id}")
+    if contribution_type:
+        print(f"{paper_id} -{relation}({contribution_type})-> {claim_id}")
+    else:
+        print(f"{paper_id} -{relation}-> {claim_id}")
 
 
 def canonicalize(text: str, math: str | None, top_k: int) -> None:
     """The cascade: structural exact match -> symbolic (math only) ->
-    lexical overlap -> dense embedding. Every tier only SURFACES candidates
-    with a tier label; nothing here merges anything — that decision (EXACT_SAME/
-    EQUIVALENT/GENERALIZES/SPECIALIZES/APPROXIMATES/CONTRADICTS/RELATED/NEW)
-    is yours to make after reading the candidates, then act via
-    `claim represent` (reuse) or `claim create` + `claim link` (new + edge)."""
+    lexical overlap -> dense embedding -> LLM judge. Tiers 1-4 only SURFACE
+    candidates with a tier label; nothing there merges anything. Tier 5 asks
+    an isolated LLM call to classify the single best surfaced candidate
+    (EXACT_SAME/EQUIVALENT/GENERALIZES/SPECIALIZES/APPROXIMATES/CONTRADICTS/
+    RELATED/NEW) — still advisory, not a decision made for you: read its
+    reasoning, then act via `claim represent` (reuse) or `claim create` +
+    `claim link` (new + edge), citing the tier that justified it as
+    `--basis` in a GraphPatch's equivalence_edges/nodes_to_reuse entries."""
     found_any = False
+    best_lexical = None
+    best_embedding = None
 
     # Tier 1: structural exact match.
     h = _content_hash(text)
@@ -267,8 +307,10 @@ def canonicalize(text: str, math: str | None, top_k: int) -> None:
         if scored:
             found_any = True
             print("=== TIER 3: lexical overlap ===")
-            for score, cand in sorted(scored, key=lambda x: -x[0])[:top_k]:
+            ranked = sorted(scored, key=lambda x: -x[0])
+            for score, cand in ranked[:top_k]:
                 print(f"  [{cand['claim_id']}] overlap={score:.2f}  {cand['content'][:150]}")
+            best_lexical = ranked[0][1]
 
     # Tier 4: dense embedding retrieval.
     vector = _embed(text, input_type="query")
@@ -289,6 +331,29 @@ def canonicalize(text: str, math: str | None, top_k: int) -> None:
             print(f"  [{r['claim_id']}] ({scope}) score={r['score']:.3f}  ({r['claim_type']}, {r['status']})")
             print(f"      {r['content'][:200]}")
             print(f"      from {r['source_paper']}")
+        best_embedding = rows[0]
+
+    # Tier 5: LLM judge — one isolated call classifying the single best
+    # candidate tiers 3/4 surfaced. Skipped entirely if nothing surfaced
+    # (nothing to judge against; "this looks NEW" already covers that).
+    best = best_embedding or best_lexical
+    if best is not None:
+        print("=== TIER 5: LLM judge ===")
+        prompt = (
+            "You are judging whether two research claims are the same idea. "
+            "Classify the relationship of claim A to claim B into exactly one "
+            "of these categories: EXACT_SAME, EQUIVALENT, GENERALIZES, "
+            "SPECIALIZES, APPROXIMATES, CONTRADICTS, RELATED, NEW.\n\n"
+            f"Claim A (new): {text}\n\n"
+            f"Claim B (existing, id {best['claim_id']}): {best['content']}\n\n"
+            'Respond with ONLY this JSON object, no markdown fences: '
+            '{"classification": "...", "reasoning": "one short sentence"}'
+        )
+        try:
+            verdict = judge(prompt)
+            print(f"  [{best['claim_id']}] {verdict.get('classification')}: {verdict.get('reasoning')}")
+        except Exception:  # noqa: BLE001 - a judge-tier failure must not take down the cascade output above
+            print("  (LLM judge call failed — treat this pair as unresolved, judge manually)")
 
     if not found_any:
         print("no candidates at any tier — this looks NEW")
@@ -465,14 +530,14 @@ GraphPatch JSON schema (see docs/paper_ingestion.md for the full workflow):
      "representations": [{"modality": "nl", "content": "...", "source_item": "paperX.theorem1", "confidence": 0.9}]}
   ],
   "nodes_to_reuse": [
-    {"existing_claim_id": "c_abc123",
+    {"existing_claim_id": "c_abc123", "basis": "structural",
      "representations": [{"modality": "nl", "content": "...", "source_item": "paperX.theorem2", "confidence": 0.85}]}
   ],
   "inference_nodes": [
     {"tmp_id": "inf1", "method": "DESCENT_LEMMA", "reasoning": "...",
      "premises": ["tmp1", "c_existing1"], "conclusion": "tmp2"}
   ],
-  "equivalence_edges": [{"type": "GENERALIZES", "from": "tmp1", "to": "c_existing2", "confidence": 0.8}],
+  "equivalence_edges": [{"type": "GENERALIZES", "from": "tmp1", "to": "c_existing2", "confidence": 0.8, "basis": "llm_judge"}],
   "contradiction_edges": [{"from": "tmp1", "to": "c_existing3", "confidence": 0.7}],
   "provenance_links": []   # usually redundant with representations[].source_item; for extra links only
 }
@@ -481,6 +546,15 @@ GraphPatch JSON schema (see docs/paper_ingestion.md for the full workflow):
 Everything else must already exist. The whole patch is validated BEFORE
 anything is written, and applied in one transaction — either all of it
 lands or none of it does.
+
+`basis` (optional, on nodes_to_reuse and equivalence_edges) records which
+canonicalization tier actually justified reusing/equating these claims:
+one of structural, symbolic, lexical, llm_judge — never "embedding", since
+embedding only ever surfaces candidates, it doesn't confirm equivalence.
+This is audit-trail metadata here (apply-patch stores it but doesn't
+enforce it); scripts/critics.py's canonicalization critic is what actually
+blocks a patch that reuses/equates a claim with no basis or an
+embedding-only basis.
 """
 
 
@@ -608,8 +682,9 @@ def apply_patch(patch_path: str) -> None:
                 for edge in patch.get("equivalence_edges", []):
                     tx.run(
                         f"""MATCH (a:Claim {{id: $src}}), (b:Claim {{id: $dst}})
-                            CREATE (a)-[:{edge['type']} {{confidence: $conf, created_at: $now}}]->(b)""",
-                        src=resolve(edge["from"]), dst=resolve(edge["to"]), conf=edge.get("confidence"), now=_now(),
+                            CREATE (a)-[:{edge['type']} {{confidence: $conf, created_at: $now, basis: $basis}}]->(b)""",
+                        src=resolve(edge["from"]), dst=resolve(edge["to"]), conf=edge.get("confidence"),
+                        basis=edge.get("basis"), now=_now(),
                     )
 
                 for edge in patch.get("contradiction_edges", []):
@@ -669,6 +744,10 @@ def main() -> None:
     ppl.add_argument("--paper", required=True)
     ppl.add_argument("--claim", required=True)
     ppl.add_argument("--relation", required=True, choices=PAPER_RELATIONS)
+    ppl.add_argument("--contribution-type", choices=CONTRIBUTION_TYPES)
+    ppf = psub.add_parser("flag")
+    ppf.add_argument("--id", required=True)
+    ppf.add_argument("--review-status", required=True, choices=PAPER_REVIEW_STATUSES)
 
     cnp = sub.add_parser("canonicalize")
     cnp.add_argument("--text", required=True)
@@ -729,7 +808,9 @@ def main() -> None:
         elif args.paper_cmd == "status":
             paper_status(args.id)
         elif args.paper_cmd == "link":
-            paper_link(args.paper, args.claim, args.relation)
+            paper_link(args.paper, args.claim, args.relation, args.contribution_type)
+        elif args.paper_cmd == "flag":
+            paper_flag(args.id, args.review_status)
     elif args.cmd == "canonicalize":
         canonicalize(args.text, args.math, args.top_k)
     elif args.cmd == "claim":

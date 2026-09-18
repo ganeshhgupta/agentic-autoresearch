@@ -102,9 +102,10 @@ more structured workflow suited to decomposing one paper.)
   something that might already be in the graph (e.g. resuming a workspace
   with prior research), so you link into existing nodes instead of
   duplicating them — `note` doesn't dedupe for you. It runs a
-  structural/symbolic/lexical/embedding cascade and prints candidates
-  from each tier; only structural or symbolic exact matches are safe to
-  reuse automatically, everything else needs you to actually read the
+  structural/symbolic/lexical/embedding/LLM-judge cascade and prints
+  candidates (and, at the last tier, an advisory classification) from
+  each; only structural or symbolic exact matches are safe to reuse
+  automatically, everything else needs you to actually read the
   candidate before treating it as the same claim.
 
 ## Writing up findings (stage 10)
