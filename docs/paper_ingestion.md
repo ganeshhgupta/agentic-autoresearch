@@ -111,17 +111,14 @@ For each atomic unit:
 2. **Run it through the canonicalization cascade before creating
    anything new:**
    ```
-   uv run scripts/kg.py canonicalize --text "<the NL statement>" [--math "<latex, if applicable>"] [--code "<python, if applicable>"]
+   uv run scripts/kg.py canonicalize --text "<the NL statement>" [--math "<latex>"] [--code "<python>"] [--metadata '<json>']
    ```
-   This runs structural (exact-hash), symbolic (SymPy, when `--math` is
-   given), code-structural (AST comparison, Python only, when `--code`
-   is given), lexical, dense-embedding, and LLM-judge tiers in sequence
-   and prints candidates from each, tagged Local or Global. There's no
-   physics- or ML-experiment-specific tier (units/dimensions, or
-   dataset/metric/hyperparameters) — those claims fall back to the
-   generic text tiers, which is a known limitation, not something to
-   work around by hand. The LLM-judge
-   tier classifies the single best lexical/embedding candidate into
+   This runs structural (exact-hash), symbolic (SymPy math), code-
+   structural (AST, Python only), physics (dimensional, when `--metadata`
+   has `unit`+`value`), ML-experiment (when it has `dataset`+`metric`),
+   lexical, dense-embedding, and LLM-judge tiers in sequence, printing
+   candidates from each, tagged Local or Global. The LLM-judge tier
+   classifies the single best domain/lexical/embedding candidate into
    EXACT_SAME/EQUIVALENT/GENERALIZES/SPECIALIZES/APPROXIMATES/
    CONTRADICTS/RELATED/NEW with a short reasoning line. **Embedding-tier
    matches are candidates only — never treat a high embedding score
@@ -133,6 +130,31 @@ For each atomic unit:
    same claim, a generalization/specialization of it, or just
    topically related — the judge tier is advisory, not a decision made
    for you.
+
+   **Physics claims** (`--metadata '{"value": 10, "unit": "joule",
+   "quantity": "kinetic energy"}'`, unit strings parsed by `pint`):
+   dimension match ALONE never proves two claims are the same quantity —
+   energy and torque are both `kg·m²/s²` in SI, confirmed directly
+   against pint before shipping this. A dimensionally-compatible
+   candidate whose `quantity` label doesn't also match is printed with an
+   explicit warning; either way, a physics-tier match is never itself a
+   valid `--basis` for a reuse/equivalence decision — always run it
+   through the LLM-judge tier and cite `llm_judge`, never `physics`
+   (which isn't even a recognized basis value).
+
+   **ML-experiment claims** (`--metadata '{"dataset": "ImageNet-1k",
+   "split": "test", "metric": "top1_accuracy", "model": "ResNet-50",
+   "value": 76.5, "error_bar": 0.3}'`, field names per the McGill/NeurIPS
+   ML Reproducibility Checklist): only candidates with an EXACT match on
+   `dataset`+`split`+`metric`+`model` are surfaced at all — a shared
+   metric *name* across a different dataset/model is not comparable, and
+   metric names are never fuzzy-matched (`F1` vs `F1-macro` vs `F1-micro`
+   are different metrics, not spelling variants). Among same-setup
+   candidates, overlapping `error_bar`s is real structured evidence, so
+   `"ml-experiment"` (unlike `"physics"`) IS a valid standalone `--basis`
+   value. A claim with no `error_bar` and no `seed`/`num_runs` will get
+   blocked by `critics.py`'s Scope critic regardless — a bare point
+   estimate isn't properly scoped to promote.
 
 3a. **If it's the same claim** — reuse that Claim id. Add this paper's
     version as a new representation, keeping existing ones untouched:
@@ -174,6 +196,21 @@ For each atomic unit:
      --content "..." --lang-or-system python --paper <paper-id> \
      --source-item <graph-a-algorithm-item-id>
    ```
+
+   **Attach structured metadata for a physics or ML-experiment claim**
+   (worth doing whenever the claim IS one of these — it's what makes the
+   physics/ML-experiment canonicalization tiers usable later, by you or
+   anyone ingesting a related paper afterward):
+   ```
+   uv run scripts/kg.py claim represent --claim <id> --modality physics \
+     --content "..." --paper <paper-id> --source-item <graph-a-item-id> \
+     --metadata '{"value": 9.8, "unit": "m/s^2", "quantity": "gravitational acceleration"}'
+   uv run scripts/kg.py claim represent --claim <id> --modality ml-experiment \
+     --content "..." --paper <paper-id> --source-item <graph-a-item-id> \
+     --metadata '{"dataset": "...", "split": "test", "metric": "...", "model": "...", "value": 0.0, "error_bar": 0.0, "seed": 0}'
+   ```
+   Always include `error_bar` or `seed`/`num_runs` for ML-experiment
+   claims — `critics.py`'s Scope critic blocks a bare point estimate.
 
 5. **Record the derivation as an Inference, not a bare edge.** A proof
    or derivation step is a first-class object with explicit premises,

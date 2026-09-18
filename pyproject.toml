@@ -12,4 +12,5 @@ dependencies = [
     "pylatexenc>=2.10",
     "sympy>=1.13",
     "antlr4-python3-runtime==4.11",
+    "pint>=0.24",
 ]

@@ -9,7 +9,20 @@ Schema:
       -- Local: this paper's draft claim. Global: canonical, shared,
       -- reusable across papers. `claim promote` moves Local -> Global.
     (:Representation {id, modality, content, content_hash, lang_or_system,
-                       source_paper, confidence, embedding, created_at})
+                       source_paper, confidence, embedding, created_at,
+                       metadata_json?})
+      -- metadata_json (modality physics|ml-experiment only): a JSON-
+      -- encoded dict, since Neo4j properties can't be nested maps.
+      --   physics:      {"value": <num>, "unit": "<pint-parseable string,
+      --                  e.g. 'm/s', 'joule'>", "quantity": "<label, e.g.
+      --                  'kinetic energy'>", "coordinate_system"?,
+      --                  "regime"?}. `quantity` matters because pint's
+      --                  dimensional check alone is NOT sufficient —
+      --                  energy and torque are both kg*m^2/s^2.
+      --   ml-experiment: {"dataset", "split", "metric", "model",
+      --                  "value": <num>, "error_bar"?, "seed"? or
+      --                  "num_runs"?, "hyperparameters"?} (fields per the
+      --                  McGill/NeurIPS ML Reproducibility Checklist).
       -[:OF]->(:Claim)
       -[:GROUNDED_IN]->(:Source)   -- provenance: exact doc-IR span, required
     (:Inference {id, method, reasoning, source_paper, created_at})
@@ -28,8 +41,10 @@ Schema:
     (:Claim)-[:EQUIVALENT_TO|GENERALIZES|SPECIALIZES|ANALOGOUS_TO
               |CONTRADICTS|SUPPORTS|LED_TO|RELATED_TO {confidence?, basis?}]->(:Claim)
       -- basis (optional, audit trail only): structural|symbolic|lexical|
-      -- llm_judge — which canonicalization tier actually justified this
-      -- edge. Never "embedding" — embedding only surfaces candidates.
+      -- llm_judge|ml-experiment — which canonicalization tier actually
+      -- justified this edge. Never "embedding" (only surfaces candidates)
+      -- and never "physics" (dimension match alone never confirms
+      -- equivalence — a physics-tier match must still cite llm_judge).
 
 There is deliberately no update/delete command for Claim or Representation
 content — only create, represent, link, promote, and search/canonicalize.
@@ -53,9 +68,9 @@ Usage:
     uv run scripts/kg.py paper status --id <arxiv-id-or-doi>
     uv run scripts/kg.py paper link --paper <id> --claim <id> --relation ASSERTS|USES|CHALLENGES [--contribution-type reused|novel-connection|new-claim|generalization|refutation|application]
     uv run scripts/kg.py paper flag --id <arxiv-id-or-doi> --review-status in_progress|needs_review|resolved
-    uv run scripts/kg.py canonicalize --text "..." [--math "..."] [--code "..."] [--top-k 5]
+    uv run scripts/kg.py canonicalize --text "..." [--math "..."] [--code "..."] [--metadata '{"unit": "m/s", "value": 3.0}'] [--top-k 5]
     uv run scripts/kg.py claim create --type theorem --status proven [--domain-tags "MSC:11A07"]
-    uv run scripts/kg.py claim represent --claim <id> --modality nl --content "..." --paper <paper-id> --source-item <doc-ir-id> [--confidence 0.9]
+    uv run scripts/kg.py claim represent --claim <id> --modality nl --content "..." --paper <paper-id> --source-item <doc-ir-id> [--confidence 0.9] [--metadata '{"unit": "m/s", "value": 3.0, "quantity": "escape velocity"}']
     uv run scripts/kg.py claim link --type EQUIVALENT_TO --from <id> --to <id> [--confidence 0.8]
     uv run scripts/kg.py claim promote --claim <id>
     uv run scripts/kg.py inference create --method NAME --reasoning "..." --paper <paper-id>
@@ -88,7 +103,7 @@ CLAIM_TYPES = ["definition", "assumption", "axiom", "theorem", "lemma", "corolla
                "claim", "conjecture", "algorithm", "empirical-result", "observation",
                "construction", "bound", "counterexample", "note"]
 STATUSES = ["proven", "conjectured", "empirically-supported", "falsified", "asserted"]
-MODALITIES = ["nl", "formal", "code"]
+MODALITIES = ["nl", "formal", "code", "physics", "ml-experiment"]
 PAPER_REVIEW_STATUSES = ["in_progress", "needs_review", "resolved"]
 CONTRIBUTION_TYPES = [
     "reused", "novel-connection", "new-claim", "generalization", "refutation", "application",
@@ -160,6 +175,24 @@ def _sympify(expr: str):
         except Exception:  # noqa: BLE001 - any parser failure just means "can't use this tier"
             continue
     return None
+
+
+_PINT_REGISTRY = None
+
+
+def _pint_quantity(metadata: dict):
+    """Parse {"value": ..., "unit": "..."} into a pint Quantity for
+    dimensional comparison. Returns None on any failure (missing/invalid
+    value or unit, unparseable unit string) — same fallback pattern as
+    _sympify: this tier just skips what it can't handle."""
+    global _PINT_REGISTRY
+    if _PINT_REGISTRY is None:
+        import pint
+        _PINT_REGISTRY = pint.UnitRegistry()
+    try:
+        return _PINT_REGISTRY.Quantity(float(metadata["value"]), metadata["unit"])
+    except Exception:  # noqa: BLE001 - bad/missing value or unrecognized unit string
+        return None
 
 
 def init() -> None:
@@ -257,7 +290,8 @@ def _ast_dump(code: str) -> str | None:
         return None
 
 
-def canonicalize(text: str, math: str | None, top_k: int, code: str | None = None) -> None:
+def canonicalize(text: str, math: str | None, top_k: int, code: str | None = None,
+                  metadata: dict | None = None) -> None:
     """The cascade: structural exact match -> symbolic (math only) ->
     code structural/AST (code only, Python) -> lexical overlap -> dense
     embedding -> LLM judge. Every tier before the LLM judge only SURFACES
@@ -268,12 +302,11 @@ def canonicalize(text: str, math: str | None, top_k: int, code: str | None = Non
     you: read its reasoning, then act via `claim represent` (reuse) or
     `claim create` + `claim link` (new + edge), citing the tier that
     justified it as `--basis` in a GraphPatch's equivalence_edges/
-    nodes_to_reuse entries. Physics (units/dimensions/coordinate system)
-    and ML-experiment (dataset/split/metric/hyperparameters/seed) specific
-    canonicalizers are NOT implemented — those need a real domain schema
-    to compare against, which is a design decision, not a generic
-    algorithm; until one exists, physics/ML claims fall back to the
-    generic NL text tiers, which is a real limitation, not a silent gap."""
+    nodes_to_reuse entries. Passing `--metadata` (JSON) triggers the
+    physics tier (needs "unit"+"value", ideally "quantity") or the
+    ML-experiment tier (needs "dataset"+"metric"), whichever the keys
+    match — see the module docstring's Schema section for the full
+    metadata shape and the reasoning behind each tier's basis rules."""
     found_any = False
     best_lexical = None
     best_embedding = None
@@ -382,10 +415,105 @@ def canonicalize(text: str, math: str | None, top_k: int, code: str | None = Non
             print(f"      from {r['source_paper']}")
         best_embedding = rows[0]
 
+    # Tier: physics dimensional match (candidate-generation only, never
+    # confirming — same dimensions does NOT mean same physical quantity:
+    # energy and torque both reduce to kg*m^2/s^2 in SI, confirmed via
+    # pint directly before shipping this. Dimension match without a
+    # matching `quantity` label is flagged as a warning, not treated as
+    # a strong signal, and a physics-tier match must always still go
+    # through the LLM judge below before it can justify a `--basis` —
+    # "physics" is deliberately never a standalone valid basis value).
+    best_physics = None
+    if metadata and "unit" in metadata and "value" in metadata:
+        query_qty = _pint_quantity(metadata)
+        if query_qty is not None:
+            candidates = _run(
+                "MATCH (r:Representation {modality: 'physics'})-[:OF]->(c:Claim) "
+                "RETURN c.id AS claim_id, r.content AS content, r.metadata_json AS metadata_json LIMIT 500"
+            )
+            matches = []
+            for cand in candidates:
+                try:
+                    cand_meta = json.loads(cand.get("metadata_json") or "{}")
+                except json.JSONDecodeError:
+                    continue
+                cand_qty = _pint_quantity(cand_meta)
+                if cand_qty is None or cand_qty.dimensionality != query_qty.dimensionality:
+                    continue
+                query_label = str(metadata.get("quantity", "")).strip().lower()
+                cand_label = str(cand_meta.get("quantity", "")).strip().lower()
+                same_label = bool(query_label) and query_label == cand_label
+                matches.append({"cand": cand, "cand_qty": cand_qty, "cand_meta": cand_meta, "same_label": same_label})
+            if matches:
+                found_any = True
+                print("=== TIER: physics dimensional match (candidates only — see warning) ===")
+                matches.sort(key=lambda m: not m["same_label"])
+                for m in matches[:top_k]:
+                    converted = m["cand_qty"].to(query_qty.units)
+                    warn = "" if m["same_label"] else (
+                        "  [WARNING: quantity label differs or unstated — same dimension can be a "
+                        "DIFFERENT physical quantity, e.g. energy vs torque; dimension match alone "
+                        "never confirms equivalence]"
+                    )
+                    print(f"  [{m['cand']['claim_id']}] {converted:.6g~P}"
+                          f" (stated as {m['cand_meta'].get('value')} {m['cand_meta'].get('unit')},"
+                          f" quantity={m['cand_meta'].get('quantity', '?')}){warn}")
+                    print(f"      {m['cand']['content'][:150]}")
+                best_physics = matches[0]["cand"]
+
+    # Tier: ML-experiment match. Unlike physics, an exact match on all of
+    # dataset+split+metric+model IS strong structured evidence (this is
+    # why "ml-experiment" is a valid --basis value on its own, unlike
+    # "physics") — but only when all four match; a shared metric NAME
+    # across different datasets/models is not comparable, and metric
+    # names are never fuzzy-matched (F1 vs F1-macro vs F1-micro are
+    # different metrics, not spelling variants, per the ML reproducibility
+    # checklist's emphasis on precisely defining the reported measure).
+    best_ml = None
+    if metadata and "dataset" in metadata and "metric" in metadata:
+        candidates = _run(
+            "MATCH (r:Representation {modality: 'ml-experiment'})-[:OF]->(c:Claim) "
+            "RETURN c.id AS claim_id, r.content AS content, r.metadata_json AS metadata_json LIMIT 500"
+        )
+        matches = []
+        for cand in candidates:
+            try:
+                cand_meta = json.loads(cand.get("metadata_json") or "{}")
+            except json.JSONDecodeError:
+                continue
+            same_setup = all(
+                str(metadata.get(k, "")).strip().lower() == str(cand_meta.get(k, "")).strip().lower()
+                for k in ("dataset", "split", "metric", "model")
+            )
+            if not same_setup:
+                continue
+            matches.append({"cand": cand, "cand_meta": cand_meta})
+        if matches:
+            found_any = True
+            print("=== TIER: ML-experiment match (same dataset/split/metric/model) ===")
+            for m in matches[:top_k]:
+                cm = m["cand_meta"]
+                v1, v2 = metadata.get("value"), cm.get("value")
+                eb1, eb2 = metadata.get("error_bar"), cm.get("error_bar")
+                if v1 is not None and v2 is not None:
+                    if eb1 is not None and eb2 is not None:
+                        overlap = abs(float(v1) - float(v2)) <= float(eb1) + float(eb2)
+                        sig = "error bars overlap" if overlap else "error bars DO NOT overlap — likely a real difference, not noise"
+                    else:
+                        sig = "no error bar on one or both — cannot assess whether the difference is significant, verify manually"
+                    print(f"  [{m['cand']['claim_id']}] value={v2} (this claim: {v1})  {sig}")
+                else:
+                    print(f"  [{m['cand']['claim_id']}] (value missing on one side, cannot compare numerically)")
+                print(f"      {m['cand']['content'][:150]}")
+            best_ml = matches[0]["cand"]
+
     # Tier 5: LLM judge — one isolated call classifying the single best
-    # candidate tiers 3/4 surfaced. Skipped entirely if nothing surfaced
-    # (nothing to judge against; "this looks NEW" already covers that).
-    best = best_embedding or best_lexical
+    # candidate any earlier tier surfaced. Skipped entirely if nothing
+    # surfaced (nothing to judge against; "this looks NEW" already covers
+    # that). Domain-specific matches (physics/ML) take priority over the
+    # generic text tiers when both are present, since they're a stronger
+    # signal about this specific claim.
+    best = best_physics or best_ml or best_embedding or best_lexical
     if best is not None:
         print("=== TIER 5: LLM judge ===")
         prompt = (
@@ -430,7 +558,8 @@ def claim_promote(claim_id: str) -> None:
 
 
 def claim_represent(claim_id: str, modality: str, content: str, lang_or_system: str | None,
-                     source_paper: str, source_item: str | None, confidence: float) -> None:
+                     source_paper: str, source_item: str | None, confidence: float,
+                     metadata: str | None = None) -> None:
     exists = _run("MATCH (c:Claim {id: $id}) RETURN c.id AS id", id=claim_id)
     if not exists:
         print(f"error: no such claim {claim_id}", file=sys.stderr)
@@ -440,6 +569,14 @@ def claim_represent(claim_id: str, modality: str, content: str, lang_or_system: 
         if not item:
             print(f"error: no such source item {source_item} — run scripts/doc_ir.py first, or omit --source-item for non-paper notes", file=sys.stderr)
             sys.exit(1)
+    metadata_json = None
+    if metadata:
+        try:
+            json.loads(metadata)  # validate only — stored as the raw string
+        except json.JSONDecodeError as e:
+            print(f"error: --metadata is not valid JSON: {e}", file=sys.stderr)
+            sys.exit(1)
+        metadata_json = metadata
 
     rep_id = _new_id("r")
     embedding = _embed(content, input_type="document") if modality == "nl" else None
@@ -447,10 +584,11 @@ def claim_represent(claim_id: str, modality: str, content: str, lang_or_system: 
         """MATCH (c:Claim {id: $claim_id})
            CREATE (r:Representation {id: $rep_id, modality: $modality, content: $content, content_hash: $hash,
                                       lang_or_system: $lang_or_system, source_paper: $source_paper,
-                                      confidence: $confidence, created_at: $now, embedding: $embedding})-[:OF]->(c)""",
+                                      confidence: $confidence, created_at: $now, embedding: $embedding,
+                                      metadata_json: $metadata_json})-[:OF]->(c)""",
         claim_id=claim_id, rep_id=rep_id, modality=modality, content=content, hash=_content_hash(content),
         lang_or_system=lang_or_system, source_paper=source_paper,
-        confidence=confidence, now=_now(), embedding=embedding,
+        confidence=confidence, now=_now(), embedding=embedding, metadata_json=metadata_json,
     )
     if source_item:
         _run(
@@ -752,15 +890,18 @@ def _write_representation(tx, claim_id: str, rep: dict, default_paper: str) -> N
     content = rep["content"]
     modality = rep["modality"]
     embedding = _embed(content, input_type="document") if modality == "nl" else None
+    metadata = rep.get("metadata")
+    metadata_json = json.dumps(metadata) if metadata is not None else None
     rep_id = _new_id("r")
     tx.run(
         """MATCH (c:Claim {id: $claim_id})
            CREATE (r:Representation {id: $rep_id, modality: $modality, content: $content, content_hash: $hash,
                                       lang_or_system: $los, source_paper: $paper,
-                                      confidence: $conf, created_at: $now, embedding: $embedding})-[:OF]->(c)""",
+                                      confidence: $conf, created_at: $now, embedding: $embedding,
+                                      metadata_json: $metadata_json})-[:OF]->(c)""",
         claim_id=claim_id, rep_id=rep_id, modality=modality, content=content, hash=_content_hash(content),
         los=rep.get("lang_or_system"), paper=rep.get("source_paper", default_paper),
-        conf=rep.get("confidence", 0.8), now=_now(), embedding=embedding,
+        conf=rep.get("confidence", 0.8), now=_now(), embedding=embedding, metadata_json=metadata_json,
     )
     if rep.get("source_item"):
         tx.run(
@@ -802,6 +943,7 @@ def main() -> None:
     cnp.add_argument("--text", required=True)
     cnp.add_argument("--math")
     cnp.add_argument("--code", help="Python source, for the AST structural-match tier")
+    cnp.add_argument("--metadata", help='JSON, e.g. \'{"unit": "m/s", "value": 3.0}\' or \'{"dataset": "...", "metric": "...", ...}\'')
     cnp.add_argument("--top-k", type=int, default=5)
 
     cp = sub.add_parser("claim")
@@ -818,6 +960,7 @@ def main() -> None:
     ccr.add_argument("--paper", required=True)
     ccr.add_argument("--source-item", help="doc_ir.py item id this came from — required for real paper ingestion")
     ccr.add_argument("--confidence", type=float, default=0.8)
+    ccr.add_argument("--metadata", help='JSON for the physics/ml-experiment canonicalization tiers, e.g. \'{"unit": "m/s", "value": 3.0, "quantity": "escape velocity"}\'')
     ccl = csub.add_parser("link")
     ccl.add_argument("--type", required=True, choices=EDGE_TYPES)
     ccl.add_argument("--from", dest="src", required=True)
@@ -862,14 +1005,21 @@ def main() -> None:
         elif args.paper_cmd == "flag":
             paper_flag(args.id, args.review_status)
     elif args.cmd == "canonicalize":
-        canonicalize(args.text, args.math, args.top_k, args.code)
+        cn_metadata = None
+        if args.metadata:
+            try:
+                cn_metadata = json.loads(args.metadata)
+            except json.JSONDecodeError as e:
+                print(f"error: --metadata is not valid JSON: {e}", file=sys.stderr)
+                sys.exit(1)
+        canonicalize(args.text, args.math, args.top_k, args.code, cn_metadata)
     elif args.cmd == "claim":
         if args.claim_cmd == "create":
             tags = [t.strip() for t in args.domain_tags.split(",") if t.strip()]
             claim_create(args.type, args.status, tags)
         elif args.claim_cmd == "represent":
             claim_represent(args.claim, args.modality, args.content, args.lang_or_system,
-                             args.paper, args.source_item, args.confidence)
+                             args.paper, args.source_item, args.confidence, args.metadata)
         elif args.claim_cmd == "link":
             claim_link(args.type, args.src, args.dst, args.confidence)
         elif args.claim_cmd == "promote":

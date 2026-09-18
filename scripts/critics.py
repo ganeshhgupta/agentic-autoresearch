@@ -30,7 +30,12 @@ from kg import _run
 from llm_judge import judge
 
 GENERAL_RESEARCH_PAPER_ID = "_general-research"
-VALID_BASES = {"structural", "symbolic", "lexical", "llm_judge"}
+# "ml-experiment" (exact dataset+split+metric+model match) is a valid
+# standalone basis - unlike "embedding" or "physics" (dimension match
+# alone never confirms equivalence; e.g. energy and torque share
+# dimensions), an exact match on all four ML fields is strong structured
+# evidence on its own. See scripts/kg.py's canonicalize() docstring.
+VALID_BASES = {"structural", "symbolic", "lexical", "llm_judge", "ml-experiment"}
 
 
 def _finding(critic: str, tmp_id: str | None, blocking: bool, message: str) -> dict:
@@ -155,11 +160,37 @@ def critic_atomicity(patch: dict) -> list[dict]:
 
 # --- 4. Scope -------------------------------------------------------------------
 
+def _ml_completeness_findings(nodes: list[dict]) -> list[dict]:
+    """Deterministic pre-check: an ml-experiment representation reporting
+    a point estimate with no error_bar and no seed/num_runs isn't properly
+    scoped, per the ML reproducibility checklist (McGill/NeurIPS) - "did
+    you report error bars (e.g. w.r.t. the random seed after multiple
+    runs)?" is a required item, not optional polish. No LLM call needed;
+    this is a structural check on the representation's own metadata."""
+    findings: list[dict] = []
+    for n in nodes:
+        for rep in n.get("representations", []):
+            if rep.get("modality") != "ml-experiment":
+                continue
+            meta = rep.get("metadata") or {}
+            has_error_bar = meta.get("error_bar") is not None
+            has_repeats = meta.get("seed") is not None or meta.get("num_runs") is not None
+            if not has_error_bar and not has_repeats:
+                findings.append(_finding(
+                    "scope", n.get("tmp_id"), True,
+                    "ml-experiment claim reports a point estimate with no error_bar and no "
+                    "seed/num_runs - per the ML reproducibility checklist, a single number "
+                    "with no variance estimate isn't sufficiently scoped to promote",
+                ))
+    return findings
+
+
 def critic_scope(patch: dict) -> list[dict]:
     nodes = patch.get("nodes_to_create", [])
     if not nodes:
         return []
 
+    findings = _ml_completeness_findings(nodes)
     items = [{"tmp_id": n["tmp_id"], "content": _nl_content(n)} for n in nodes]
     prompt = (
         "You are reviewing proposed claims for a scientific knowledge graph. "
@@ -176,13 +207,13 @@ def critic_scope(patch: dict) -> list[dict]:
     try:
         results = judge(prompt)
     except Exception as e:  # noqa: BLE001 - any judge-call failure degrades to a warning
-        return [
+        findings.extend(
             _finding("scope", n["tmp_id"], False,
                       f"scope critic call failed — could not verify, review manually ({e})")
             for n in nodes
-        ]
+        )
+        return findings
 
-    findings: list[dict] = []
     for r in results:
         if not r.get("scoped", True):
             findings.append(_finding("scope", r.get("tmp_id"), True,
